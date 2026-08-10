@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import bcrypt from 'bcryptjs'
 import pool from '../db'
 import { sendWelcomeEmail, sendPasswordChangeConfirmation } from '../services/email'
+import { requireAdmin } from '../middleware/requireAdmin'
 
 const router = Router()
 
@@ -44,7 +45,7 @@ function generatePseudo(firstName: string, lastName: string): string {
   return base + digits
 }
 
-router.post('/auth/register', async (req: Request, res: Response) => {
+router.post('/auth/register', requireAdmin(), async (req: Request, res: Response) => {
   try {
     const { email, first_name, last_name, role_id } = req.body
     if (!email || !first_name || !last_name || !role_id) {
@@ -88,7 +89,7 @@ router.post('/auth/login', async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body
     if (!email || !password) {
-      res.status(400).json({ error: 'Email et mot de passe requis' })
+      res.status(400).json({ error: 'Email/pseudo et mot de passe requis' })
       return
     }
 
@@ -96,13 +97,13 @@ router.post('/auth/login', async (req: Request, res: Response) => {
       `SELECT u.*, r.id as role_id, r.name as role_name, r.description as role_description
        FROM users u
        JOIN roles r ON r.id = u.role_id
-       WHERE u.email = ?`,
-      [email]
+       WHERE u.email = ? OR u.pseudo = ?`,
+      [email, email]
     )
 
     const user = rows[0]
     if (!user) {
-      res.status(401).json({ error: 'Email ou mot de passe incorrect' })
+      res.status(401).json({ error: 'Email/pseudo ou mot de passe incorrect' })
       return
     }
     if (!user.is_active) {
@@ -112,7 +113,7 @@ router.post('/auth/login', async (req: Request, res: Response) => {
 
     const valid = await bcrypt.compare(password, user.password_hash)
     if (!valid) {
-      res.status(401).json({ error: 'Email ou mot de passe incorrect' })
+      res.status(401).json({ error: 'Email/pseudo ou mot de passe incorrect' })
       return
     }
 
@@ -126,6 +127,7 @@ router.post('/auth/login', async (req: Request, res: Response) => {
     res.json({
       id: user.id,
       email: user.email,
+      pseudo: user.pseudo,
       first_name: user.first_name,
       last_name: user.last_name,
       is_active: user.is_active,
@@ -181,6 +183,36 @@ router.post('/auth/change-password', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: 'Erreur lors du changement de mot de passe' })
+  }
+})
+
+router.post('/auth/reset-password', requireAdmin(), async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body
+    if (!email) {
+      res.status(400).json({ error: 'Email requis' })
+      return
+    }
+
+    const [rows] = await pool.query<any[]>('SELECT * FROM users WHERE email = ?', [email])
+    const user = rows[0]
+    if (!user) {
+      res.status(404).json({ error: 'Utilisateur non trouvé' })
+      return
+    }
+
+    const tempPassword = generateTempPassword()
+    const password_hash = await bcrypt.hash(tempPassword, 10)
+    await pool.query(
+      'UPDATE users SET password_hash = ?, must_change_password = TRUE WHERE id = ?',
+      [password_hash, user.id]
+    )
+
+    await sendWelcomeEmail(email, user.first_name, tempPassword)
+    res.json({ success: true, message: 'Mot de passe réinitialisé, email envoyé' })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Erreur lors de la réinitialisation du mot de passe' })
   }
 })
 

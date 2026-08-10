@@ -1,7 +1,11 @@
 import { Router, Request, Response } from 'express'
 import pool from '../db'
+import { requireAdmin } from '../middleware/requireAdmin'
 
 const router = Router()
+
+// Toute la page Admin (projets, utilisateurs, rôles) est réservée au rôle "admin".
+router.use(requireAdmin())
 
 // ─────────────────────── PROJECTS ───────────────────────
 
@@ -152,7 +156,7 @@ router.put('/users/:id/projects', async (req: Request, res: Response) => {
     }
     const [rows] = await pool.query(
       `SELECT p.*, up.permission FROM projects p
-       JOIN user_projects up ON up.project_id = p.id AND up.user_id = ?
+       LEFT JOIN user_projects up ON up.project_id = p.id AND up.user_id = ?
        ORDER BY p.name`,
       [req.params.id]
     )
@@ -164,6 +168,8 @@ router.put('/users/:id/projects', async (req: Request, res: Response) => {
 })
 
 // ─────────────────────── ROLES ───────────────────────
+// Gestion des rôles personnalisés et de leurs permissions par page/projet — conservée telle quelle
+// pour une évolution future ; l'accès à la page Admin elle-même reste conditionné à role="admin" ci-dessus.
 
 router.get('/roles', async (_req: Request, res: Response) => {
   try {

@@ -1,14 +1,21 @@
 import { Router, Request, Response } from 'express'
 import pool from '../db'
+import { hasProjectAccess } from '../utils/projectPermissions'
 
 const router = Router()
 
-router.get('/projects', async (_req: Request, res: Response) => {
+router.get('/projects', async (req: Request, res: Response) => {
   try {
-    const [rows] = await pool.query(
+    const userEmail = req.headers['x-user-email'] as string | undefined
+    const [rows] = await pool.query<any[]>(
       'SELECT id, name, slug, description, color, status, created_at FROM projects ORDER BY name'
     )
-    res.json(rows)
+
+    const withAccess = await Promise.all(
+      rows.map(async (p) => ({ ...p, hasAccess: await hasProjectAccess(userEmail, p.id, p.slug) }))
+    )
+    const accessible = withAccess.filter((p) => p.hasAccess).map(({ hasAccess: _hasAccess, ...p }) => p)
+    res.json(accessible)
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: 'Failed to fetch projects' })
@@ -17,13 +24,19 @@ router.get('/projects', async (_req: Request, res: Response) => {
 
 router.get('/projects/:slug', async (req: Request, res: Response) => {
   try {
-    const [projects] = await pool.query(
+    const userEmail = req.headers['x-user-email'] as string | undefined
+    const [projects] = await pool.query<any[]>(
       'SELECT id, name, slug, description, color, status, created_at FROM projects WHERE slug = ?',
       [req.params.slug]
     )
-    const project = (projects as any[])[0]
+    const project = projects[0]
     if (!project) {
       res.status(404).json({ error: 'Project not found' })
+      return
+    }
+
+    if (!(await hasProjectAccess(userEmail, project.id, project.slug))) {
+      res.status(403).json({ error: 'Accès non autorisé à ce projet' })
       return
     }
 

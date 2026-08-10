@@ -12,17 +12,16 @@ function getClient(): Resend | null {
 }
 
 export async function sendWelcomeEmail(to: string, firstName: string, tempPassword: string) {
-  console.log(`[EMAIL] Welcome email for ${to} — temp password: ${tempPassword}`)
   const resend = getClient()
   if (!resend) return
   try {
     await resend.emails.send({
       from,
       to,
-      subject: 'Bienvenue sur SDP Dashboard — Vos identifiants',
+      subject: 'Bienvenue sur SDP — Vos identifiants',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0f172a; color: #e2e8f0; border-radius: 12px;">
-          <h1 style="color: #818cf8; font-size: 20px; margin-bottom: 16px;">Bienvenue sur SDP Dashboard</h1>
+          <h1 style="color: #818cf8; font-size: 20px; margin-bottom: 16px;">Bienvenue sur SDP</h1>
           <p style="color: #94a3b8; font-size: 14px; line-height: 1.6;">Bonjour <strong style="color: #e2e8f0;">${firstName}</strong>,</p>
           <p style="color: #94a3b8; font-size: 14px; line-height: 1.6;">
             Un administrateur vous a créé un compte. Voici votre mot de passe provisoire :
@@ -52,12 +51,12 @@ export async function sendPasswordChangeConfirmation(to: string, firstName: stri
     await resend.emails.send({
       from,
       to,
-      subject: 'SDP Dashboard — Mot de passe modifié',
+      subject: 'SDP — Mot de passe modifié',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px; background: #0f172a; color: #e2e8f0; border-radius: 12px;">
           <h1 style="color: #818cf8; font-size: 20px; margin-bottom: 16px;">Mot de passe modifié</h1>
           <p style="color: #94a3b8; font-size: 14px;">Bonjour <strong style="color: #e2e8f0;">${firstName}</strong>,</p>
-          <p style="color: #94a3b8; font-size: 14px;">Votre mot de passe SDP Dashboard a bien été modifié.</p>
+          <p style="color: #94a3b8; font-size: 14px;">Votre mot de passe SDP a bien été modifié.</p>
           <p style="color: #64748b; font-size: 12px; margin-top: 24px;">Si vous n'êtes pas à l'origine de cette modification, contactez un administrateur.</p>
         </div>
       `,
