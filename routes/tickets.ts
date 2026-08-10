@@ -46,6 +46,27 @@ router.get('/tickets', async (req: Request, res: Response) => {
   }
 })
 
+router.get('/tickets/open-count', async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromRequest(req)
+    if (!user) {
+      res.status(401).json({ error: 'Authentification requise' })
+      return
+    }
+    if (user.role_name !== 'admin') {
+      res.status(403).json({ error: 'Réservé aux administrateurs' })
+      return
+    }
+    const [rows] = await pool.query<any[]>(
+      `SELECT COUNT(*) as count FROM support_tickets WHERE status = 'Ouvert'`
+    )
+    res.json({ count: rows[0].count })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Erreur lors du comptage des tickets' })
+  }
+})
+
 router.get('/tickets/:id', async (req: Request, res: Response) => {
   try {
     const user = await getUserFromRequest(req)
@@ -79,7 +100,7 @@ router.post('/tickets', async (req: Request, res: Response) => {
       return
     }
 
-    const { project, category, priority, subject, description, email } = req.body
+    const { project, category, priority, subject, description } = req.body
     if (!subject || !description || !category) {
       res.status(400).json({ error: 'Champs requis : subject, description, category' })
       return
@@ -102,7 +123,7 @@ router.post('/tickets', async (req: Request, res: Response) => {
     const [result] = await pool.query<any>(
       `INSERT INTO support_tickets (ticket_number, user_id, project_id, category, priority, subject, description, contact_email)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [ticketNumber, user.id, projectId, category, priority, subject, description, email || null]
+      [ticketNumber, user.id, projectId, category, priority, subject, description, user.email]
     )
 
     const id = (result as any).insertId
@@ -137,18 +158,40 @@ router.put('/tickets/:id/status', async (req: Request, res: Response) => {
       return
     }
 
+    const [existingRows] = await pool.query<any[]>(
+      'SELECT user_id, ticket_number, status FROM support_tickets WHERE id = ?',
+      [req.params.id]
+    )
+    const existing = existingRows[0]
+    if (!existing) {
+      res.status(404).json({ error: 'Ticket introuvable' })
+      return
+    }
+
     await pool.query(
       'UPDATE support_tickets SET status = ? WHERE id = ?',
       [status, req.params.id]
     )
+
+    if (existing.status !== status) {
+      const messages: Record<string, string> = {
+        'En cours': `Votre ticket ${existing.ticket_number} est en cours de traitement.`,
+        'Résolu': `Votre ticket ${existing.ticket_number} a été résolu.`,
+        'Fermé': `Votre ticket ${existing.ticket_number} a été fermé.`,
+      }
+      const message = messages[status]
+      if (message) {
+        await pool.query(
+          'INSERT INTO notifications (user_id, ticket_id, type, message) VALUES (?, ?, ?, ?)',
+          [existing.user_id, req.params.id, 'ticket_status_change', message]
+        )
+      }
+    }
+
     const [rows] = await pool.query<any[]>(
       `${TICKET_SELECT} WHERE t.id = ?`,
       [req.params.id]
     )
-    if (!rows[0]) {
-      res.status(404).json({ error: 'Ticket introuvable' })
-      return
-    }
     res.json(rows[0])
   } catch (err) {
     console.error(err)
