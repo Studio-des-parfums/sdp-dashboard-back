@@ -8,40 +8,75 @@ function parseJsonArray(value: unknown): string[] | null {
   return typeof value === 'string' ? JSON.parse(value) : (value as string[])
 }
 
+// Une note porte ses traductions en sous-objet `translations: { fr: "...", en: "..." }`,
+// construites via une agrégation JSON pour ne faire qu'un aller-retour en base.
+const TRANSLATIONS_SUBSELECT = `
+  (SELECT JSON_OBJECTAGG(t.language, t.name)
+   FROM ingredient_translations t
+   WHERE t.ingredient_id = i.id) AS translations
+`
+
 function parseIngredient(row: any) {
+  const { translations, ...rest } = row
   return {
-    ...row,
+    ...rest,
     is_active: !!row.is_active,
     allergens: parseJsonArray(row.allergens),
     box_sets: parseJsonArray(row.box_sets),
+    translations: translations
+      ? (typeof translations === 'string' ? JSON.parse(translations) : translations)
+      : {},
+  }
+}
+
+async function setTranslations(ingredientId: number, translations: Record<string, string>) {
+  const entries = Object.entries(translations).filter(([, name]) => name && name.trim())
+  if (entries.length === 0) return
+  const values = entries.map(([lang, name]) => [ingredientId, lang, name.trim()])
+  await pool.query(
+    `INSERT INTO ingredient_translations (ingredient_id, language, name) VALUES ?
+     ON DUPLICATE KEY UPDATE name = VALUES(name)`,
+    [values]
+  )
+  // Langues explicitement vidées dans la requête : on les retire.
+  const emptyLangs = Object.entries(translations).filter(([, name]) => !name || !name.trim()).map(([lang]) => lang)
+  if (emptyLangs.length > 0) {
+    await pool.query(
+      'DELETE FROM ingredient_translations WHERE ingredient_id = ? AND language IN (?)',
+      [ingredientId, emptyLangs]
+    )
   }
 }
 
 router.get('/ingredients', async (req: Request, res: Response) => {
   try {
-    const { language, type, active_only, box_set } = req.query
+    const { language, type, active_only, box_set, q } = req.query
     const conditions: string[] = []
     const params: unknown[] = []
 
     if (language) {
-      conditions.push('language = ?')
+      conditions.push('EXISTS (SELECT 1 FROM ingredient_translations t WHERE t.ingredient_id = i.id AND t.language = ?)')
       params.push(language)
     }
     if (type) {
-      conditions.push('type = ?')
+      conditions.push('i.type = ?')
       params.push(type)
     }
     if (active_only === 'true') {
-      conditions.push('is_active = TRUE')
+      conditions.push('i.is_active = TRUE')
     }
     if (box_set) {
-      conditions.push('JSON_CONTAINS(box_sets, JSON_QUOTE(?))')
+      conditions.push('JSON_CONTAINS(i.box_sets, JSON_QUOTE(?))')
       params.push(box_set)
+    }
+    if (q) {
+      conditions.push('EXISTS (SELECT 1 FROM ingredient_translations t WHERE t.ingredient_id = i.id AND t.name LIKE ?)')
+      params.push(`%${q}%`)
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const [rows] = await pool.query<any[]>(
-      `SELECT * FROM ingredients ${where} ORDER BY name`,
+      `SELECT i.*, ${TRANSLATIONS_SUBSELECT} FROM ingredients i ${where} ORDER BY i.id`,
       params
     )
     res.json(rows.map(parseIngredient))
@@ -53,26 +88,32 @@ router.get('/ingredients', async (req: Request, res: Response) => {
 
 router.post('/ingredients', async (req: Request, res: Response) => {
   try {
-    const { name, type, category, language, description, intensity, allergens, box_sets } = req.body
-    if (!name || !type) {
-      res.status(400).json({ error: 'name et type sont requis' })
+    const { translations, type, category, description, intensity, allergens, box_sets } = req.body
+    if (!translations || typeof translations !== 'object' || !Object.values(translations).some((v) => typeof v === 'string' && v.trim())) {
+      res.status(400).json({ error: 'Au moins un nom traduit (translations) est requis' })
+      return
+    }
+    if (!type) {
+      res.status(400).json({ error: 'type est requis' })
       return
     }
     const [result] = await pool.query<any>(
-      `INSERT INTO ingredients (name, type, category, language, description, intensity, allergens, box_sets)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ingredients (type, category, description, intensity, allergens, box_sets)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
-        name,
         type,
         category ?? null,
-        language ?? 'fr',
         description ?? null,
         intensity ?? null,
         allergens ? JSON.stringify(allergens) : null,
         box_sets ? JSON.stringify(box_sets) : null,
       ]
     )
-    const [rows] = await pool.query<any[]>('SELECT * FROM ingredients WHERE id = ?', [result.insertId])
+    await setTranslations(result.insertId, translations)
+    const [rows] = await pool.query<any[]>(
+      `SELECT i.*, ${TRANSLATIONS_SUBSELECT} FROM ingredients i WHERE i.id = ?`,
+      [result.insertId]
+    )
     res.status(201).json(parseIngredient(rows[0]))
   } catch (err) {
     console.error(err)
@@ -86,27 +127,34 @@ router.patch('/ingredients/:id', async (req: Request, res: Response) => {
     const fields: string[] = []
     const params: unknown[] = []
 
-    const { name, type, category, language, description, intensity, allergens, box_sets, is_active } = req.body
+    const { translations, type, category, description, intensity, allergens, box_sets, is_active } = req.body
 
-    if (name !== undefined) { fields.push('name = ?'); params.push(name) }
     if (type !== undefined) { fields.push('type = ?'); params.push(type) }
     if (category !== undefined) { fields.push('category = ?'); params.push(category) }
-    if (language !== undefined) { fields.push('language = ?'); params.push(language) }
     if (description !== undefined) { fields.push('description = ?'); params.push(description) }
     if (intensity !== undefined) { fields.push('intensity = ?'); params.push(intensity) }
     if (allergens !== undefined) { fields.push('allergens = ?'); params.push(allergens ? JSON.stringify(allergens) : null) }
     if (box_sets !== undefined) { fields.push('box_sets = ?'); params.push(box_sets ? JSON.stringify(box_sets) : null) }
     if (is_active !== undefined) { fields.push('is_active = ?'); params.push(!!is_active) }
 
-    if (fields.length === 0) {
+    if (fields.length > 0) {
+      params.push(id)
+      await pool.query(`UPDATE ingredients SET ${fields.join(', ')} WHERE id = ?`, params)
+    }
+
+    if (translations && typeof translations === 'object') {
+      await setTranslations(Number(id), translations)
+    }
+
+    if (fields.length === 0 && !translations) {
       res.status(400).json({ error: 'Aucun champ à mettre à jour' })
       return
     }
 
-    params.push(id)
-    await pool.query(`UPDATE ingredients SET ${fields.join(', ')} WHERE id = ?`, params)
-
-    const [rows] = await pool.query<any[]>('SELECT * FROM ingredients WHERE id = ?', [id])
+    const [rows] = await pool.query<any[]>(
+      `SELECT i.*, ${TRANSLATIONS_SUBSELECT} FROM ingredients i WHERE i.id = ?`,
+      [id]
+    )
     if (!rows[0]) {
       res.status(404).json({ error: 'Ingredient not found' })
       return
