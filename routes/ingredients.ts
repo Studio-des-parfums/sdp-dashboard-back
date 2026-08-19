@@ -48,6 +48,25 @@ async function setTranslations(ingredientId: number, translations: Record<string
   }
 }
 
+// Les coffrets ne sont pas une table dédiée : ce sont des tags libres portés
+// par chaque note dans sa colonne box_sets (JSON). Cette route dérive la liste
+// des coffrets distincts en base, avec leur nombre de notes associées.
+router.get('/box-sets', async (_req: Request, res: Response) => {
+  try {
+    const [rows] = await pool.query<any[]>(
+      `SELECT bs.name AS name, COUNT(*) AS ingredient_count
+       FROM ingredients i, JSON_TABLE(i.box_sets, '$[*]' COLUMNS (name VARCHAR(255) PATH '$')) bs
+       WHERE i.box_sets IS NOT NULL
+       GROUP BY bs.name
+       ORDER BY bs.name`
+    )
+    res.json(rows.map((r) => ({ name: r.name, ingredient_count: Number(r.ingredient_count) })))
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Failed to fetch box sets' })
+  }
+})
+
 router.get('/ingredients', async (req: Request, res: Response) => {
   try {
     const { language, type, active_only, box_set, q } = req.query

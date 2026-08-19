@@ -9,6 +9,7 @@ import ticketRoutes from './routes/tickets'
 import notificationRoutes from './routes/notifications'
 import messageRoutes from './routes/messages'
 import ingredientRoutes from './routes/ingredients'
+import ingredientRuleRoutes from './routes/ingredient-rules'
 import { initSocket } from './services/socket'
 
 const app = express()
@@ -26,6 +27,7 @@ app.use('/api', ticketRoutes)
 app.use('/api', notificationRoutes)
 app.use('/api', messageRoutes)
 app.use('/api', ingredientRoutes)
+app.use('/api', ingredientRuleRoutes)
 app.use('/api', adminRoutes)
 
 app.get('/health', (_req, res) => {
