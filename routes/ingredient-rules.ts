@@ -88,7 +88,7 @@ function readNoteCountFields(body: any): Record<(typeof NOTE_COUNT_FIELDS)[numbe
 
 router.get('/ingredient-rules', async (req: Request, res: Response) => {
   try {
-    const { source_ingredient_id, rule_type, bottle_size, box_set, intensity, active_only } = req.query
+    const { source_ingredient_id, rule_type, bottle_size, box_set_id, intensity, active_only } = req.query
     const conditions: string[] = []
     const params: unknown[] = []
 
@@ -104,9 +104,9 @@ router.get('/ingredient-rules', async (req: Request, res: Response) => {
       conditions.push('EXISTS (SELECT 1 FROM ingredient_rule_bottle_sizes bs WHERE bs.rule_id = r.id AND bs.bottle_size = ?)')
       params.push(bottle_size)
     }
-    if (box_set) {
-      conditions.push('r.box_set = ?')
-      params.push(box_set)
+    if (box_set_id) {
+      conditions.push('r.box_set_id = ?')
+      params.push(box_set_id)
     }
     if (intensity) {
       // Une règle 'toutes' s'applique à toutes les intensités : on la
@@ -132,7 +132,7 @@ router.get('/ingredient-rules', async (req: Request, res: Response) => {
 
 router.post('/ingredient-rules', async (req: Request, res: Response) => {
   try {
-    const { source_ingredient_id, rule_type, max_ml, max_choices, bottle_sizes, box_set, intensity, note, target_ingredient_ids } = req.body
+    const { source_ingredient_id, rule_type, max_ml, max_choices, bottle_sizes, box_set_id, intensity, note, target_ingredient_ids } = req.body
 
     if (!RULE_TYPES.includes(rule_type as RuleType)) {
       res.status(400).json({ error: `rule_type doit être l'un de : ${RULE_TYPES.join(', ')}` })
@@ -205,7 +205,7 @@ router.post('/ingredient-rules', async (req: Request, res: Response) => {
 
     const [result] = await pool.query<any>(
       `INSERT INTO ingredient_rules
-         (source_ingredient_id, rule_type, max_ml, max_choices, box_set, intensity, note,
+         (source_ingredient_id, rule_type, max_ml, max_choices, box_set_id, intensity, note,
           min_top, max_top, min_heart, max_heart, min_base, max_base)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -213,7 +213,7 @@ router.post('/ingredient-rules', async (req: Request, res: Response) => {
         rule_type,
         rule_type === 'max_dosage' ? max_ml : null,
         rule_type === 'group_limit' ? max_choices : null,
-        box_set ?? null,
+        box_set_id ?? null,
         intensity ?? 'toutes',
         note ?? null,
         noteCountValues.min_top, noteCountValues.max_top,
@@ -246,7 +246,7 @@ router.patch('/ingredient-rules/:id', async (req: Request, res: Response) => {
     const fields: string[] = []
     const params: unknown[] = []
 
-    const { source_ingredient_id, rule_type, max_ml, max_choices, bottle_sizes, box_set, intensity, note, is_active, target_ingredient_ids } = req.body
+    const { source_ingredient_id, rule_type, max_ml, max_choices, bottle_sizes, box_set_id, intensity, note, is_active, target_ingredient_ids } = req.body
 
     if (rule_type !== undefined && !RULE_TYPES.includes(rule_type as RuleType)) {
       res.status(400).json({ error: `rule_type doit être l'un de : ${RULE_TYPES.join(', ')}` })
@@ -269,7 +269,7 @@ router.patch('/ingredient-rules/:id', async (req: Request, res: Response) => {
     if (rule_type !== undefined) { fields.push('rule_type = ?'); params.push(rule_type) }
     if (max_ml !== undefined) { fields.push('max_ml = ?'); params.push(max_ml) }
     if (max_choices !== undefined) { fields.push('max_choices = ?'); params.push(max_choices) }
-    if (box_set !== undefined) { fields.push('box_set = ?'); params.push(box_set) }
+    if (box_set_id !== undefined) { fields.push('box_set_id = ?'); params.push(box_set_id) }
     if (intensity !== undefined) { fields.push('intensity = ?'); params.push(intensity) }
     if (note !== undefined) { fields.push('note = ?'); params.push(note) }
     if (is_active !== undefined) { fields.push('is_active = ?'); params.push(!!is_active) }

@@ -16,17 +16,39 @@ const TRANSLATIONS_SUBSELECT = `
    WHERE t.ingredient_id = i.id) AS translations
 `
 
+// Les coffrets d'une note vivent dans la table de jointure ingredient_coffrets
+// (remplace l'ancien tag libre box_sets JSON) — même approche que TARGETS_SUBSELECT
+// dans routes/ingredient-rules.ts.
+const COFFRET_IDS_SUBSELECT = `
+  (SELECT JSON_ARRAYAGG(ic.coffret_id)
+   FROM ingredient_coffrets ic
+   WHERE ic.ingredient_id = i.id) AS coffret_ids
+`
+
 function parseIngredient(row: any) {
-  const { translations, ...rest } = row
+  const { translations, coffret_ids, ...rest } = row
   return {
     ...rest,
     is_active: !!row.is_active,
     allergens: parseJsonArray(row.allergens),
-    box_sets: parseJsonArray(row.box_sets),
+    coffret_ids: coffret_ids
+      ? (typeof coffret_ids === 'string' ? JSON.parse(coffret_ids) : coffret_ids)
+      : [],
     translations: translations
       ? (typeof translations === 'string' ? JSON.parse(translations) : translations)
       : {},
   }
+}
+
+async function setCoffrets(ingredientId: number, coffretIds: number[]) {
+  await pool.query('DELETE FROM ingredient_coffrets WHERE ingredient_id = ?', [ingredientId])
+  const ids = [...new Set(coffretIds)].filter((id) => Number.isInteger(id))
+  if (ids.length === 0) return
+  const values = ids.map((coffretId) => [ingredientId, coffretId])
+  await pool.query(
+    'INSERT INTO ingredient_coffrets (ingredient_id, coffret_id) VALUES ?',
+    [values]
+  )
 }
 
 async function setTranslations(ingredientId: number, translations: Record<string, string>) {
@@ -48,28 +70,9 @@ async function setTranslations(ingredientId: number, translations: Record<string
   }
 }
 
-// Les coffrets ne sont pas une table dédiée : ce sont des tags libres portés
-// par chaque note dans sa colonne box_sets (JSON). Cette route dérive la liste
-// des coffrets distincts en base, avec leur nombre de notes associées.
-router.get('/box-sets', async (_req: Request, res: Response) => {
-  try {
-    const [rows] = await pool.query<any[]>(
-      `SELECT bs.name AS name, COUNT(*) AS ingredient_count
-       FROM ingredients i, JSON_TABLE(i.box_sets, '$[*]' COLUMNS (name VARCHAR(255) PATH '$')) bs
-       WHERE i.box_sets IS NOT NULL
-       GROUP BY bs.name
-       ORDER BY bs.name`
-    )
-    res.json(rows.map((r) => ({ name: r.name, ingredient_count: Number(r.ingredient_count) })))
-  } catch (err) {
-    console.error(err)
-    res.status(500).json({ error: 'Failed to fetch box sets' })
-  }
-})
-
 router.get('/ingredients', async (req: Request, res: Response) => {
   try {
-    const { language, type, active_only, box_set, q } = req.query
+    const { language, type, active_only, coffret_id, q } = req.query
     const conditions: string[] = []
     const params: unknown[] = []
 
@@ -84,9 +87,9 @@ router.get('/ingredients', async (req: Request, res: Response) => {
     if (active_only === 'true') {
       conditions.push('i.is_active = TRUE')
     }
-    if (box_set) {
-      conditions.push('JSON_CONTAINS(i.box_sets, JSON_QUOTE(?))')
-      params.push(box_set)
+    if (coffret_id) {
+      conditions.push('EXISTS (SELECT 1 FROM ingredient_coffrets ic WHERE ic.ingredient_id = i.id AND ic.coffret_id = ?)')
+      params.push(coffret_id)
     }
     if (q) {
       conditions.push('EXISTS (SELECT 1 FROM ingredient_translations t WHERE t.ingredient_id = i.id AND t.name LIKE ?)')
@@ -95,7 +98,7 @@ router.get('/ingredients', async (req: Request, res: Response) => {
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const [rows] = await pool.query<any[]>(
-      `SELECT i.*, ${TRANSLATIONS_SUBSELECT} FROM ingredients i ${where} ORDER BY i.id`,
+      `SELECT i.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT} FROM ingredients i ${where} ORDER BY i.id`,
       params
     )
     res.json(rows.map(parseIngredient))
@@ -107,7 +110,7 @@ router.get('/ingredients', async (req: Request, res: Response) => {
 
 router.post('/ingredients', async (req: Request, res: Response) => {
   try {
-    const { translations, type, category, description, intensity, allergens, box_sets } = req.body
+    const { translations, type, category, description, intensity, allergens, coffret_ids } = req.body
     if (!translations || typeof translations !== 'object' || !Object.values(translations).some((v) => typeof v === 'string' && v.trim())) {
       res.status(400).json({ error: 'Au moins un nom traduit (translations) est requis' })
       return
@@ -117,20 +120,22 @@ router.post('/ingredients', async (req: Request, res: Response) => {
       return
     }
     const [result] = await pool.query<any>(
-      `INSERT INTO ingredients (type, category, description, intensity, allergens, box_sets)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ingredients (type, category, description, intensity, allergens)
+       VALUES (?, ?, ?, ?, ?)`,
       [
         type,
         category ?? null,
         description ?? null,
         intensity ?? null,
         allergens ? JSON.stringify(allergens) : null,
-        box_sets ? JSON.stringify(box_sets) : null,
       ]
     )
     await setTranslations(result.insertId, translations)
+    if (Array.isArray(coffret_ids)) {
+      await setCoffrets(result.insertId, coffret_ids)
+    }
     const [rows] = await pool.query<any[]>(
-      `SELECT i.*, ${TRANSLATIONS_SUBSELECT} FROM ingredients i WHERE i.id = ?`,
+      `SELECT i.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT} FROM ingredients i WHERE i.id = ?`,
       [result.insertId]
     )
     res.status(201).json(parseIngredient(rows[0]))
@@ -146,14 +151,13 @@ router.patch('/ingredients/:id', async (req: Request, res: Response) => {
     const fields: string[] = []
     const params: unknown[] = []
 
-    const { translations, type, category, description, intensity, allergens, box_sets, is_active } = req.body
+    const { translations, type, category, description, intensity, allergens, coffret_ids, is_active } = req.body
 
     if (type !== undefined) { fields.push('type = ?'); params.push(type) }
     if (category !== undefined) { fields.push('category = ?'); params.push(category) }
     if (description !== undefined) { fields.push('description = ?'); params.push(description) }
     if (intensity !== undefined) { fields.push('intensity = ?'); params.push(intensity) }
     if (allergens !== undefined) { fields.push('allergens = ?'); params.push(allergens ? JSON.stringify(allergens) : null) }
-    if (box_sets !== undefined) { fields.push('box_sets = ?'); params.push(box_sets ? JSON.stringify(box_sets) : null) }
     if (is_active !== undefined) { fields.push('is_active = ?'); params.push(!!is_active) }
 
     if (fields.length > 0) {
@@ -165,13 +169,17 @@ router.patch('/ingredients/:id', async (req: Request, res: Response) => {
       await setTranslations(Number(id), translations)
     }
 
-    if (fields.length === 0 && !translations) {
+    if (Array.isArray(coffret_ids)) {
+      await setCoffrets(Number(id), coffret_ids)
+    }
+
+    if (fields.length === 0 && !translations && !Array.isArray(coffret_ids)) {
       res.status(400).json({ error: 'Aucun champ à mettre à jour' })
       return
     }
 
     const [rows] = await pool.query<any[]>(
-      `SELECT i.*, ${TRANSLATIONS_SUBSELECT} FROM ingredients i WHERE i.id = ?`,
+      `SELECT i.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT} FROM ingredients i WHERE i.id = ?`,
       [id]
     )
     if (!rows[0]) {
