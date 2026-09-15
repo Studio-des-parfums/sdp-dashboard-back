@@ -203,4 +203,22 @@ router.delete('/ingredients/:id', async (req: Request, res: Response) => {
   }
 })
 
+// Retire une note d'un coffret précis. Si c'était son dernier coffret, elle
+// n'a plus de sens dans ce référentiel : elle est supprimée entièrement
+// (même règle que la suppression d'un coffret entier dans routes/coffrets.ts).
+router.delete('/ingredients/:id/coffrets/:coffretId', async (req: Request, res: Response) => {
+  try {
+    const { id, coffretId } = req.params
+    await pool.query('DELETE FROM ingredient_coffrets WHERE ingredient_id = ? AND coffret_id = ?', [id, coffretId])
+    const [remaining] = await pool.query<any[]>('SELECT 1 FROM ingredient_coffrets WHERE ingredient_id = ?', [id])
+    if (remaining.length === 0) {
+      await pool.query('DELETE FROM ingredients WHERE id = ?', [id])
+    }
+    res.status(204).send()
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Failed to unlink ingredient from coffret' })
+  }
+})
+
 export default router

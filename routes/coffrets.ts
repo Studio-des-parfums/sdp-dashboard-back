@@ -56,6 +56,19 @@ router.get('/coffrets', async (req: Request, res: Response) => {
   }
 })
 
+// Les boosters sont partagés par tous les coffrets : dès qu'un coffret est
+// créé, on y lie automatiquement chaque booster existant (au lieu de laisser
+// l'utilisateur le faire manuellement à chaque fois).
+async function linkBoostersToCoffret(coffretId: number) {
+  const [boosters] = await pool.query<any[]>("SELECT id FROM ingredients WHERE type = 'booster'")
+  if (boosters.length === 0) return
+  const values = boosters.map((b) => [b.id, coffretId])
+  await pool.query(
+    'INSERT INTO ingredient_coffrets (ingredient_id, coffret_id) VALUES ? ON DUPLICATE KEY UPDATE ingredient_id = ingredient_id',
+    [values]
+  )
+}
+
 router.post('/coffrets', async (req: Request, res: Response) => {
   try {
     const { translations } = req.body
@@ -65,6 +78,7 @@ router.post('/coffrets', async (req: Request, res: Response) => {
     }
     const [result] = await pool.query<any>('INSERT INTO coffrets () VALUES ()')
     await setTranslations(result.insertId, translations)
+    await linkBoostersToCoffret(result.insertId)
     const [rows] = await pool.query<any[]>(
       `SELECT c.*, ${TRANSLATIONS_SUBSELECT} FROM coffrets c WHERE c.id = ?`,
       [result.insertId]
@@ -114,13 +128,46 @@ router.patch('/coffrets/:id', async (req: Request, res: Response) => {
   }
 })
 
+// Supprimer un coffret ne supprime pas les notes qu'il contenait — sauf celles
+// qui n'appartenaient qu'à lui, qui deviendraient orphelines (une note sans
+// aucun coffret n'a plus de sens dans ce référentiel). Le coffret est supprimé
+// en premier dans la transaction : si un atelier le référence encore
+// (ON DELETE RESTRICT), tout est annulé et aucune note n'est touchée.
 router.delete('/coffrets/:id', async (req: Request, res: Response) => {
+  const coffretId = req.params.id
+  const conn = await pool.getConnection()
   try {
-    await pool.query('DELETE FROM coffrets WHERE id = ?', [req.params.id])
-    res.status(204).send()
-  } catch (err) {
+    await conn.beginTransaction()
+
+    const [orphanRows] = await conn.query<any[]>(
+      `SELECT ingredient_id FROM ingredient_coffrets WHERE coffret_id = ?
+       AND ingredient_id IN (
+         SELECT ingredient_id FROM (
+           SELECT ingredient_id FROM ingredient_coffrets GROUP BY ingredient_id HAVING COUNT(*) = 1
+         ) AS single_coffret_ingredients
+       )`,
+      [coffretId]
+    )
+    const orphanIds = orphanRows.map((r) => r.ingredient_id)
+
+    await conn.query('DELETE FROM coffrets WHERE id = ?', [coffretId])
+
+    if (orphanIds.length > 0) {
+      await conn.query('DELETE FROM ingredients WHERE id IN (?)', [orphanIds])
+    }
+
+    await conn.commit()
+    res.status(200).json({ deleted_note_count: orphanIds.length })
+  } catch (err: any) {
+    await conn.rollback()
+    if (err.code === 'ER_ROW_IS_REFERENCED_2' || err.code === 'ER_ROW_IS_REFERENCED') {
+      res.status(409).json({ error: 'Ce coffret est utilisé par un atelier, impossible de le supprimer' })
+      return
+    }
     console.error(err)
     res.status(500).json({ error: 'Failed to delete coffret' })
+  } finally {
+    conn.release()
   }
 })
 
