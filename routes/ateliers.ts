@@ -16,6 +16,7 @@ function parseAtelier(row: any) {
   return {
     ...rest,
     is_active: !!row.is_active,
+    volume_ml: row.volume_ml != null ? Number(row.volume_ml) : null,
     translations: translations
       ? (typeof translations === 'string' ? JSON.parse(translations) : translations)
       : {},
@@ -69,7 +70,7 @@ router.get('/ateliers', async (req: Request, res: Response) => {
 
 router.post('/ateliers', async (req: Request, res: Response) => {
   try {
-    const { translations, coffret_id, description } = req.body
+    const { translations, coffret_id, description, volume_ml } = req.body
     if (!translations || typeof translations !== 'object' || !Object.values(translations).some((v) => typeof v === 'string' && v.trim())) {
       res.status(400).json({ error: 'Au moins un nom traduit (translations) est requis' })
       return
@@ -79,8 +80,8 @@ router.post('/ateliers', async (req: Request, res: Response) => {
       return
     }
     const [result] = await pool.query<any>(
-      `INSERT INTO ateliers (coffret_id, description) VALUES (?, ?)`,
-      [coffret_id, description ?? null]
+      `INSERT INTO ateliers (coffret_id, description, volume_ml) VALUES (?, ?, ?)`,
+      [coffret_id, description ?? null, volume_ml ?? null]
     )
     await setTranslations(result.insertId, translations)
     const [rows] = await pool.query<any[]>(
@@ -100,10 +101,11 @@ router.patch('/ateliers/:id', async (req: Request, res: Response) => {
     const fields: string[] = []
     const params: unknown[] = []
 
-    const { translations, coffret_id, description, is_active } = req.body
+    const { translations, coffret_id, description, volume_ml, is_active } = req.body
 
     if (coffret_id !== undefined) { fields.push('coffret_id = ?'); params.push(coffret_id) }
     if (description !== undefined) { fields.push('description = ?'); params.push(description) }
+    if (volume_ml !== undefined) { fields.push('volume_ml = ?'); params.push(volume_ml) }
     if (is_active !== undefined) { fields.push('is_active = ?'); params.push(!!is_active) }
 
     if (fields.length > 0) {
