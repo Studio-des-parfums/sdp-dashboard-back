@@ -1,7 +1,10 @@
 import { Router, Request, Response } from 'express'
+import multer from 'multer'
 import pool from '../db'
+import { uploadAtelierImage, deleteAtelierImage } from '../services/s3'
 
 const router = Router()
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } })
 
 // Un atelier porte ses traductions en sous-objet `translations: { fr: "...", en: "..." }`,
 // même approche que TRANSLATIONS_SUBSELECT dans routes/ingredients.ts et routes/coffrets.ts.
@@ -137,9 +140,70 @@ router.patch('/ateliers/:id', async (req: Request, res: Response) => {
   }
 })
 
+router.post('/ateliers/:id/image', upload.single('image'), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    if (!req.file) {
+      res.status(400).json({ error: 'Fichier image requis (champ "image")' })
+      return
+    }
+    if (!req.file.mimetype.startsWith('image/')) {
+      res.status(400).json({ error: 'Le fichier doit être une image' })
+      return
+    }
+
+    const [existingRows] = await pool.query<any[]>('SELECT image_url FROM ateliers WHERE id = ?', [id])
+    if (!existingRows[0]) {
+      res.status(404).json({ error: 'Atelier not found' })
+      return
+    }
+
+    const imageUrl = await uploadAtelierImage(Number(id), req.file.buffer, req.file.originalname, req.file.mimetype)
+
+    if (existingRows[0].image_url) {
+      await deleteAtelierImage(existingRows[0].image_url).catch((err) => console.error('Failed to delete old atelier image', err))
+    }
+
+    await pool.query('UPDATE ateliers SET image_url = ? WHERE id = ?', [imageUrl, id])
+
+    const [rows] = await pool.query<any[]>(
+      `SELECT a.*, ${TRANSLATIONS_SUBSELECT} FROM ateliers a WHERE a.id = ?`,
+      [id]
+    )
+    res.json(parseAtelier(rows[0]))
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Failed to upload atelier image' })
+  }
+})
+
+router.delete('/ateliers/:id/image', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params
+    const [rows] = await pool.query<any[]>('SELECT image_url FROM ateliers WHERE id = ?', [id])
+    if (!rows[0]) {
+      res.status(404).json({ error: 'Atelier not found' })
+      return
+    }
+    if (rows[0].image_url) {
+      await deleteAtelierImage(rows[0].image_url).catch((err) => console.error('Failed to delete atelier image from S3', err))
+      await pool.query('UPDATE ateliers SET image_url = NULL WHERE id = ?', [id])
+    }
+    res.status(204).send()
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Failed to delete atelier image' })
+  }
+})
+
 router.delete('/ateliers/:id', async (req: Request, res: Response) => {
   try {
-    await pool.query('DELETE FROM ateliers WHERE id = ?', [req.params.id])
+    const { id } = req.params
+    const [rows] = await pool.query<any[]>('SELECT image_url FROM ateliers WHERE id = ?', [id])
+    if (rows[0]?.image_url) {
+      await deleteAtelierImage(rows[0].image_url).catch((err) => console.error('Failed to delete atelier image from S3', err))
+    }
+    await pool.query('DELETE FROM ateliers WHERE id = ?', [id])
     res.status(204).send()
   } catch (err) {
     console.error(err)
