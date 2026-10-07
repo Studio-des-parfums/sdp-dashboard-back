@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import pool from '../db'
+import { translateNoteName } from '../services/translate'
 
 const router = Router()
 
@@ -70,6 +71,38 @@ async function setTranslations(ingredientId: number, translations: Record<string
   }
 }
 
+// Complète automatiquement les langues absentes à partir du nom français via
+// OpenAI. Une langue déjà présente dans `translations` (même vide, donc
+// explicitement effacée par l'admin) n'est jamais écrasée — seule une langue
+// absente du payload est générée.
+async function withAutoTranslations(translations: Record<string, string>): Promise<Record<string, string>> {
+  const fr = translations.fr?.trim()
+  if (!fr) return translations
+  const generated = await translateNoteName(fr)
+  const result = { ...translations }
+  for (const [lang, name] of Object.entries(generated)) {
+    if (!(lang in result)) result[lang] = name
+  }
+  return result
+}
+
+// Traduit un nom de note (français) vers les autres langues supportées, à la
+// demande du front (bouton "traduire" ou auto-traduction avant enregistrement).
+router.post('/ingredients/translate', async (req: Request, res: Response) => {
+  try {
+    const { name } = req.body
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'name est requis' })
+      return
+    }
+    const translations = await translateNoteName(name)
+    res.json({ translations })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Failed to translate note name' })
+  }
+})
+
 router.get('/ingredients', async (req: Request, res: Response) => {
   try {
     const { language, type, active_only, coffret_id, q } = req.query
@@ -119,6 +152,7 @@ router.post('/ingredients', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'type est requis' })
       return
     }
+    const fullTranslations = await withAutoTranslations(translations)
     const [result] = await pool.query<any>(
       `INSERT INTO ingredients (type, code, category, description, intensity, allergens)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -131,7 +165,7 @@ router.post('/ingredients', async (req: Request, res: Response) => {
         allergens ? JSON.stringify(allergens) : null,
       ]
     )
-    await setTranslations(result.insertId, translations)
+    await setTranslations(result.insertId, fullTranslations)
     if (Array.isArray(coffret_ids)) {
       await setCoffrets(result.insertId, coffret_ids)
     }
@@ -168,7 +202,8 @@ router.patch('/ingredients/:id', async (req: Request, res: Response) => {
     }
 
     if (translations && typeof translations === 'object') {
-      await setTranslations(Number(id), translations)
+      const fullTranslations = await withAutoTranslations(translations)
+      await setTranslations(Number(id), fullTranslations)
     }
 
     if (Array.isArray(coffret_ids)) {
