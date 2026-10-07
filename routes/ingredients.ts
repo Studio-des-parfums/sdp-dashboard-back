@@ -110,7 +110,7 @@ router.get('/ingredients', async (req: Request, res: Response) => {
 
 router.post('/ingredients', async (req: Request, res: Response) => {
   try {
-    const { translations, type, category, description, intensity, allergens, coffret_ids } = req.body
+    const { translations, type, code, category, description, intensity, allergens, coffret_ids } = req.body
     if (!translations || typeof translations !== 'object' || !Object.values(translations).some((v) => typeof v === 'string' && v.trim())) {
       res.status(400).json({ error: 'Au moins un nom traduit (translations) est requis' })
       return
@@ -120,10 +120,11 @@ router.post('/ingredients', async (req: Request, res: Response) => {
       return
     }
     const [result] = await pool.query<any>(
-      `INSERT INTO ingredients (type, category, description, intensity, allergens)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO ingredients (type, code, category, description, intensity, allergens)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       [
         type,
+        code ?? null,
         category ?? null,
         description ?? null,
         intensity ?? null,
@@ -151,9 +152,10 @@ router.patch('/ingredients/:id', async (req: Request, res: Response) => {
     const fields: string[] = []
     const params: unknown[] = []
 
-    const { translations, type, category, description, intensity, allergens, coffret_ids, is_active } = req.body
+    const { translations, type, code, category, description, intensity, allergens, coffret_ids, is_active } = req.body
 
     if (type !== undefined) { fields.push('type = ?'); params.push(type) }
+    if (code !== undefined) { fields.push('code = ?'); params.push(code) }
     if (category !== undefined) { fields.push('category = ?'); params.push(category) }
     if (description !== undefined) { fields.push('description = ?'); params.push(description) }
     if (intensity !== undefined) { fields.push('intensity = ?'); params.push(intensity) }
