@@ -13,6 +13,30 @@ function generateTempPassword(): string {
   return pwd
 }
 
+// Vérification du pseudo pour le mode superviseur de la tablette (aglae-form) :
+// pas de mot de passe demandé sur tablette, juste le pseudo + un rôle actif.
+router.get('/users/by-pseudo', async (req: Request, res: Response) => {
+  const pseudo = req.query.pseudo as string
+  if (!pseudo) {
+    res.status(400).json({ error: 'Pseudo requis' })
+    return
+  }
+  const [rows] = await pool.query<any[]>(
+    `SELECT u.id, u.pseudo, u.first_name, u.last_name, u.email, u.is_active,
+            r.id as role_id, r.name as role_name
+     FROM users u
+     JOIN roles r ON r.id = u.role_id
+     WHERE u.pseudo = ?`,
+    [pseudo]
+  )
+  const user = rows[0]
+  if (!user || !user.is_active) {
+    res.status(404).json({ error: 'Pseudo introuvable' })
+    return
+  }
+  res.json(user)
+})
+
 router.get('/users/me', async (req: Request, res: Response) => {
   const email = req.headers['x-user-email'] as string
   if (!email) {
