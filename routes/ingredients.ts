@@ -81,7 +81,7 @@ async function withAutoTranslations(translations: Record<string, string>): Promi
   const generated = await translateNoteName(fr)
   const result = { ...translations }
   for (const [lang, name] of Object.entries(generated)) {
-    if (!(lang in result)) result[lang] = name
+    if (!result[lang]?.trim()) result[lang] = name
   }
   return result
 }
