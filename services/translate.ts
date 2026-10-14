@@ -93,3 +93,14 @@ export async function translateAtelierName(nameFr: string): Promise<Record<strin
       'littérale maladroite ; les noms évocateurs/poétiques doivent rester évocateurs dans la langue cible).'
   )
 }
+
+export async function translateOptionName(nameFr: string): Promise<Record<string, string>> {
+  return translateName(
+    nameFr,
+    'nom d\'option facultative proposée avec un parfum sur-mesure',
+    "Tu traduis des noms d'options facultatives proposées avec la création d'un parfum sur-mesure (ex: ruban, " +
+      'champagne, flacon en verre de Murano — contexte boutique de luxe à Paris) du français vers plusieurs langues. ' +
+      'Réponds uniquement avec un objet JSON dont les clés sont les codes de langue fournis et les valeurs les ' +
+      'traductions, concises et idiomatiques pour un contexte de luxe (pas de traduction littérale maladroite).'
+  )
+}

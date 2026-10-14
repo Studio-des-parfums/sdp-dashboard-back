@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import multer from 'multer'
 import pool from '../db'
 import { uploadOptionImage, deleteOptionImage } from '../services/s3'
+import { translateOptionName } from '../services/translate'
 
 const router = Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } })
@@ -22,13 +23,24 @@ const COFFRET_IDS_SUBSELECT = `
    WHERE oc.option_id = o.id) AS coffret_ids
 `
 
+// Ateliers pour lesquels l'option est disponible, via option_ateliers : même principe, liste
+// vide = disponible pour tous les ateliers. Se combine en ET avec le filtre coffret.
+const ATELIER_IDS_SUBSELECT = `
+  (SELECT JSON_ARRAYAGG(oa.atelier_id)
+   FROM option_ateliers oa
+   WHERE oa.option_id = o.id) AS atelier_ids
+`
+
 function parseOption(row: any) {
-  const { translations, coffret_ids, ...rest } = row
+  const { translations, coffret_ids, atelier_ids, ...rest } = row
   return {
     ...rest,
     is_active: !!row.is_active,
     coffret_ids: coffret_ids
       ? (typeof coffret_ids === 'string' ? JSON.parse(coffret_ids) : coffret_ids)
+      : [],
+    atelier_ids: atelier_ids
+      ? (typeof atelier_ids === 'string' ? JSON.parse(atelier_ids) : atelier_ids)
       : [],
     translations: translations
       ? (typeof translations === 'string' ? JSON.parse(translations) : translations)
@@ -45,6 +57,30 @@ async function setCoffrets(optionId: number, coffretIds: number[]) {
     'INSERT INTO option_coffrets (option_id, coffret_id) VALUES ?',
     [values]
   )
+}
+
+async function setAteliers(optionId: number, atelierIds: number[]) {
+  await pool.query('DELETE FROM option_ateliers WHERE option_id = ?', [optionId])
+  const ids = [...new Set(atelierIds)].filter((id) => Number.isInteger(id))
+  if (ids.length === 0) return
+  const values = ids.map((atelierId) => [optionId, atelierId])
+  await pool.query(
+    'INSERT INTO option_ateliers (option_id, atelier_id) VALUES ?',
+    [values]
+  )
+}
+
+// Complète les traductions saisies manuellement avec celles générées automatiquement (OpenAI)
+// à partir du nom français, sans jamais écraser une traduction déjà fournie explicitement.
+async function withAutoTranslations(translations: Record<string, string>): Promise<Record<string, string>> {
+  const fr = translations.fr?.trim()
+  if (!fr) return translations
+  const generated = await translateOptionName(fr)
+  const result = { ...translations }
+  for (const [lang, name] of Object.entries(generated)) {
+    if (!(lang in result)) result[lang] = name
+  }
+  return result
 }
 
 async function setTranslations(optionId: number, translations: Record<string, string>) {
@@ -68,7 +104,7 @@ async function setTranslations(optionId: number, translations: Record<string, st
 
 router.get('/options', async (req: Request, res: Response) => {
   try {
-    const { coffret_id, active_only } = req.query
+    const { coffret_id, atelier_id, active_only } = req.query
     const conditions: string[] = []
     const params: unknown[] = []
 
@@ -81,13 +117,21 @@ router.get('/options', async (req: Request, res: Response) => {
       )`)
       params.push(coffret_id)
     }
+    if (atelier_id) {
+      // Même principe pour l'atelier : se combine en ET avec le filtre coffret ci-dessus.
+      conditions.push(`(
+        NOT EXISTS (SELECT 1 FROM option_ateliers oa WHERE oa.option_id = o.id)
+        OR EXISTS (SELECT 1 FROM option_ateliers oa WHERE oa.option_id = o.id AND oa.atelier_id = ?)
+      )`)
+      params.push(atelier_id)
+    }
     if (active_only === 'true') {
       conditions.push('o.is_active = TRUE')
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
     const [rows] = await pool.query<any[]>(
-      `SELECT o.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT} FROM options o ${where} ORDER BY o.id`,
+      `SELECT o.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT}, ${ATELIER_IDS_SUBSELECT} FROM options o ${where} ORDER BY o.id`,
       params
     )
     res.json(rows.map(parseOption))
@@ -99,7 +143,7 @@ router.get('/options', async (req: Request, res: Response) => {
 
 router.post('/options', async (req: Request, res: Response) => {
   try {
-    const { translations, description, coffret_ids } = req.body
+    const { translations, description, coffret_ids, atelier_ids } = req.body
     if (!translations || typeof translations !== 'object' || !Object.values(translations).some((v) => typeof v === 'string' && v.trim())) {
       res.status(400).json({ error: 'Au moins un nom traduit (translations) est requis' })
       return
@@ -108,12 +152,16 @@ router.post('/options', async (req: Request, res: Response) => {
       `INSERT INTO options (description) VALUES (?)`,
       [description ?? null]
     )
-    await setTranslations(result.insertId, translations)
+    const fullTranslations = await withAutoTranslations(translations)
+    await setTranslations(result.insertId, fullTranslations)
     if (Array.isArray(coffret_ids)) {
       await setCoffrets(result.insertId, coffret_ids)
     }
+    if (Array.isArray(atelier_ids)) {
+      await setAteliers(result.insertId, atelier_ids)
+    }
     const [rows] = await pool.query<any[]>(
-      `SELECT o.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT} FROM options o WHERE o.id = ?`,
+      `SELECT o.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT}, ${ATELIER_IDS_SUBSELECT} FROM options o WHERE o.id = ?`,
       [result.insertId]
     )
     res.status(201).json(parseOption(rows[0]))
@@ -129,7 +177,7 @@ router.patch('/options/:id', async (req: Request, res: Response) => {
     const fields: string[] = []
     const params: unknown[] = []
 
-    const { translations, description, coffret_ids, is_active } = req.body
+    const { translations, description, coffret_ids, atelier_ids, is_active } = req.body
 
     if (description !== undefined) { fields.push('description = ?'); params.push(description) }
     if (is_active !== undefined) { fields.push('is_active = ?'); params.push(!!is_active) }
@@ -140,19 +188,23 @@ router.patch('/options/:id', async (req: Request, res: Response) => {
     }
 
     if (translations && typeof translations === 'object') {
-      await setTranslations(Number(id), translations)
+      const fullTranslations = await withAutoTranslations(translations)
+      await setTranslations(Number(id), fullTranslations)
     }
     if (Array.isArray(coffret_ids)) {
       await setCoffrets(Number(id), coffret_ids)
     }
+    if (Array.isArray(atelier_ids)) {
+      await setAteliers(Number(id), atelier_ids)
+    }
 
-    if (fields.length === 0 && !translations && !Array.isArray(coffret_ids)) {
+    if (fields.length === 0 && !translations && !Array.isArray(coffret_ids) && !Array.isArray(atelier_ids)) {
       res.status(400).json({ error: 'Aucun champ à mettre à jour' })
       return
     }
 
     const [rows] = await pool.query<any[]>(
-      `SELECT o.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT} FROM options o WHERE o.id = ?`,
+      `SELECT o.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT}, ${ATELIER_IDS_SUBSELECT} FROM options o WHERE o.id = ?`,
       [id]
     )
     if (!rows[0]) {
@@ -193,7 +245,7 @@ router.post('/options/:id/image', upload.single('image'), async (req: Request, r
     await pool.query('UPDATE options SET image_url = ? WHERE id = ?', [imageUrl, id])
 
     const [rows] = await pool.query<any[]>(
-      `SELECT o.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT} FROM options o WHERE o.id = ?`,
+      `SELECT o.*, ${TRANSLATIONS_SUBSELECT}, ${COFFRET_IDS_SUBSELECT}, ${ATELIER_IDS_SUBSELECT} FROM options o WHERE o.id = ?`,
       [id]
     )
     res.json(parseOption(rows[0]))
