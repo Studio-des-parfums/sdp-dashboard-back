@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import multer from 'multer'
 import pool from '../db'
 import { uploadAtelierImage, deleteAtelierImage } from '../services/s3'
+import { translateAtelierName } from '../services/translate'
 
 const router = Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } })
@@ -24,6 +25,19 @@ function parseAtelier(row: any) {
       ? (typeof translations === 'string' ? JSON.parse(translations) : translations)
       : {},
   }
+}
+
+// Complète les traductions saisies manuellement avec celles générées automatiquement (OpenAI)
+// à partir du nom français, sans jamais écraser une traduction déjà fournie explicitement.
+async function withAutoTranslations(translations: Record<string, string>): Promise<Record<string, string>> {
+  const fr = translations.fr?.trim()
+  if (!fr) return translations
+  const generated = await translateAtelierName(fr)
+  const result = { ...translations }
+  for (const [lang, name] of Object.entries(generated)) {
+    if (!(lang in result)) result[lang] = name
+  }
+  return result
 }
 
 async function setTranslations(atelierId: number, translations: Record<string, string>) {
@@ -86,7 +100,8 @@ router.post('/ateliers', async (req: Request, res: Response) => {
       `INSERT INTO ateliers (coffret_id, description, volume_ml) VALUES (?, ?, ?)`,
       [coffret_id, description ?? null, volume_ml ?? null]
     )
-    await setTranslations(result.insertId, translations)
+    const fullTranslations = await withAutoTranslations(translations)
+    await setTranslations(result.insertId, fullTranslations)
     const [rows] = await pool.query<any[]>(
       `SELECT a.*, ${TRANSLATIONS_SUBSELECT} FROM ateliers a WHERE a.id = ?`,
       [result.insertId]
@@ -117,7 +132,8 @@ router.patch('/ateliers/:id', async (req: Request, res: Response) => {
     }
 
     if (translations && typeof translations === 'object') {
-      await setTranslations(Number(id), translations)
+      const fullTranslations = await withAutoTranslations(translations)
+      await setTranslations(Number(id), fullTranslations)
     }
 
     if (fields.length === 0 && !translations) {
