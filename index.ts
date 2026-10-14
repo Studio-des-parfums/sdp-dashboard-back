@@ -12,6 +12,7 @@ import ingredientRoutes from './routes/ingredients'
 import ingredientRuleRoutes from './routes/ingredient-rules'
 import coffretRoutes from './routes/coffrets'
 import atelierRoutes from './routes/ateliers'
+import optionRoutes from './routes/options'
 import { initSocket } from './services/socket'
 
 const app = express()
@@ -32,6 +33,7 @@ app.use('/api', ingredientRoutes)
 app.use('/api', ingredientRuleRoutes)
 app.use('/api', coffretRoutes)
 app.use('/api', atelierRoutes)
+app.use('/api', optionRoutes)
 app.use('/api', adminRoutes)
 
 app.get('/health', (_req, res) => {

@@ -6,6 +6,9 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client
 const BUCKET = process.env.AWS_S3_BUCKET || ''
 const REGION = process.env.AWS_S3_REGION || 'eu-west-3'
 const ATELIERS_PREFIX = 'ateliers/'
+// Images d'options (ex: Ruban, Champagne, Flacon murano) : même bucket, préfixe dédié
+// public en lecture — voir server/migrations/029 pour la bucket policy associée.
+const OPTIONS_PREFIX = 'options/'
 
 function getClient(): S3Client {
   return new S3Client({
@@ -46,6 +49,35 @@ export async function deleteAtelierImage(imageUrl: string): Promise<void> {
   const prefix = publicUrl(ATELIERS_PREFIX)
   if (!imageUrl.startsWith(prefix)) return
   const key = `${ATELIERS_PREFIX}${imageUrl.slice(prefix.length)}`
+
+  await getClient().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
+}
+
+export async function uploadOptionImage(
+  optionId: number,
+  fileBuffer: Buffer,
+  originalFilename: string,
+  contentType: string
+): Promise<string> {
+  const ext = originalFilename.split('.').pop()?.toLowerCase() || 'jpg'
+  const key = `${OPTIONS_PREFIX}${optionId}_${Date.now()}.${ext}`
+
+  await getClient().send(
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      Body: fileBuffer,
+      ContentType: contentType,
+    })
+  )
+
+  return publicUrl(key)
+}
+
+export async function deleteOptionImage(imageUrl: string): Promise<void> {
+  const prefix = publicUrl(OPTIONS_PREFIX)
+  if (!imageUrl.startsWith(prefix)) return
+  const key = `${OPTIONS_PREFIX}${imageUrl.slice(prefix.length)}`
 
   await getClient().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
 }
