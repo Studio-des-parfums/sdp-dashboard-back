@@ -1,0 +1,23 @@
+meta {
+  name: List Conversations
+  type: http
+  seq: 3
+  tags: [
+    readonly
+  ]
+}
+
+get {
+  url: {{baseUrl}}/api/messages/conversations
+  body: none
+  auth: none
+}
+
+headers {
+  x-user-email: {{userEmail}}
+}
+
+assert {
+  res.status: eq 200
+  res.body: isDefined
+}

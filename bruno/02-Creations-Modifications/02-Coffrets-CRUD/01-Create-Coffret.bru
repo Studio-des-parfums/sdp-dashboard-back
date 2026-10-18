@@ -1,0 +1,34 @@
+meta {
+  name: Create Coffret
+  type: http
+  seq: 1
+  tags: [
+    mutation
+  ]
+}
+
+post {
+  url: {{baseUrl}}/api/coffrets
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "translations": {
+      "fr": "Coffret Bruno Test"
+    }
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.id: isNumber
+  res.body.translations.fr: eq Coffret Bruno Test
+}
+
+script:post-response {
+  if (res.body && res.body.id) {
+    bru.setVar("createdCoffretId", res.body.id);
+  }
+}

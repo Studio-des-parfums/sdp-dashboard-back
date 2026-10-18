@@ -1,0 +1,23 @@
+meta {
+  name: Delete User
+  type: http
+  seq: 4
+  tags: [
+    mutation
+  ]
+}
+
+delete {
+  url: {{baseUrl}}/api/users/{{createdUserId}}
+  body: none
+  auth: none
+}
+
+headers {
+  x-user-email: {{userEmail}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.success: eq true
+}

@@ -1,0 +1,19 @@
+meta {
+  name: Delete Coffret
+  type: http
+  seq: 3
+  tags: [
+    mutation
+  ]
+}
+
+delete {
+  url: {{baseUrl}}/api/coffrets/{{createdCoffretId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.deleted_note_count: isDefined
+}
