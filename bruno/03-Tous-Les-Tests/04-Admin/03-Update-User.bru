@@ -1,0 +1,31 @@
+meta {
+  name: Update User
+  type: http
+  seq: 3
+  tags: [
+    mutation
+  ]
+}
+
+put {
+  url: {{baseUrl}}/api/users/{{createdUserId}}
+  body: json
+  auth: none
+}
+
+headers {
+  x-user-email: {{userEmail}}
+}
+
+body:json {
+  {
+    "first_name": "TestBrunoUpdated",
+    "last_name": "DashboardUser"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq {{createdUserId}}
+  res.body.first_name: eq TestBrunoUpdated
+}

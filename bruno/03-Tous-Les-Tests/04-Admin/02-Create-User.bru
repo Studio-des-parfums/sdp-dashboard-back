@@ -1,0 +1,40 @@
+meta {
+  name: Create User
+  type: http
+  seq: 2
+  tags: [
+    mutation
+  ]
+}
+
+post {
+  url: {{baseUrl}}/api/users
+  body: json
+  auth: none
+}
+
+headers {
+  x-user-email: {{userEmail}}
+}
+
+body:json {
+  {
+    "email": "bruno.user.{{$timestamp}}@example.com",
+    "first_name": "TestBruno",
+    "last_name": "DashboardUser",
+    "role_id": 1,
+    "is_active": true
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: isNumber
+  res.body.first_name: eq TestBruno
+}
+
+script:post-response {
+  if (res.body && res.body.id) {
+    bru.setVar("createdUserId", res.body.id);
+  }
+}

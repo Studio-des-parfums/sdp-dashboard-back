@@ -1,0 +1,20 @@
+meta {
+  name: List Ingredient Rules
+  type: http
+  seq: 4
+  tags: [
+    readonly
+  ]
+}
+
+get {
+  url: {{baseUrl}}/api/ingredient-rules
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isDefined
+  res.body.length: gte 0
+}

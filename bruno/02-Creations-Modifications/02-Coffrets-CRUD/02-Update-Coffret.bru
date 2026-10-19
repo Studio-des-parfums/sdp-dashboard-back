@@ -1,0 +1,28 @@
+meta {
+  name: Update Coffret
+  type: http
+  seq: 2
+  tags: [
+    mutation
+  ]
+}
+
+patch {
+  url: {{baseUrl}}/api/coffrets/{{createdCoffretId}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "translations": {
+      "fr": "Coffret Bruno Updated"
+    }
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq {{createdCoffretId}}
+  res.body.translations.fr: eq Coffret Bruno Updated
+}

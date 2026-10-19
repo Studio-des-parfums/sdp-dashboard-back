@@ -1,0 +1,20 @@
+meta {
+  name: List Options
+  type: http
+  seq: 5
+  tags: [
+    readonly
+  ]
+}
+
+get {
+  url: {{baseUrl}}/api/options
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isDefined
+  res.body.length: gte 0
+}
