@@ -15,7 +15,7 @@ import atelierRoutes from './routes/ateliers'
 import optionRoutes from './routes/options'
 import { initSocket } from './services/socket'
 
-const app = express()
+export const app = express()
 const PORT = Number(process.env.PORT) || 3001
 
 app.use(cors({ origin: '*' }))
@@ -40,9 +40,13 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
-const httpServer = createServer(app)
-initSocket(httpServer)
+if (process.env.NODE_ENV !== 'test') {
+  const httpServer = createServer(app)
+  initSocket(httpServer)
 
-httpServer.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`)
-})
+  httpServer.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`)
+  })
+}
+
+export default app
