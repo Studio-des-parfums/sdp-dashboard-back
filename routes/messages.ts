@@ -117,11 +117,17 @@ router.get('/messages/:userId', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Identifiant invalide' })
       return
     }
+    // ASC + LIMIT tronquerait les messages les plus récents dans une longue conversation
+    // (ex: une réponse qu'on vient d'envoyer n'apparaîtrait plus) — on prend donc les 200
+    // derniers par date décroissante, puis on les remet dans l'ordre chronologique.
     const [rows] = await pool.query<any[]>(
-      `SELECT * FROM messages
-       WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)
-       ORDER BY created_at ASC
-       LIMIT 200`,
+      `SELECT * FROM (
+         SELECT * FROM messages
+         WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)
+         ORDER BY created_at DESC
+         LIMIT 200
+       ) recent
+       ORDER BY created_at ASC`,
       [user.id, otherId, otherId, user.id]
     )
     res.json(rows)
