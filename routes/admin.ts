@@ -79,28 +79,6 @@ router.get('/users', async (_req: Request, res: Response) => {
   }
 })
 
-router.post('/users', async (req: Request, res: Response) => {
-  try {
-    const { email, first_name, last_name, role_id, is_active } = req.body
-    const [result] = await pool.query(
-      'INSERT INTO users (email, first_name, last_name, role_id, is_active) VALUES (?, ?, ?, ?, ?)',
-      [email, first_name, last_name, role_id, is_active ?? true]
-    )
-    const [rows] = await pool.query(
-      `SELECT u.*, r.name as role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`,
-      [(result as any).insertId]
-    )
-    res.json((rows as any[])[0])
-  } catch (err: any) {
-    if (err.code === 'ER_DUP_ENTRY') {
-      res.status(409).json({ error: 'Cet email est déjà utilisé' })
-      return
-    }
-    console.error(err)
-    res.status(500).json({ error: 'Erreur lors de la création de l\'utilisateur' })
-  }
-})
-
 router.put('/users/:id', async (req: Request, res: Response) => {
   try {
     const { email, first_name, last_name, role_id, is_active } = req.body

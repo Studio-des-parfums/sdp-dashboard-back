@@ -1,6 +1,7 @@
 import { Resend } from 'resend'
 
 const from = process.env.RESEND_FROM_EMAIL || 'noreply@sdp-paris.com'
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://main.d1e2pr3r9i0qy0.amplifyapp.com'
 
 function getClient(): Resend | null {
   const key = process.env.RESEND_API_KEY
@@ -32,6 +33,9 @@ export async function sendWelcomeEmail(to: string, firstName: string, tempPasswo
           <p style="color: #94a3b8; font-size: 14px; line-height: 1.6;">
             Connectez-vous avec ce mot de passe. Vous devrez le modifier lors de votre première connexion.
           </p>
+          <a href="${FRONTEND_URL}" style="display: inline-block; margin-top: 12px; background: #818cf8; color: #0f172a; text-decoration: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;">
+            Se connecter
+          </a>
           <p style="color: #64748b; font-size: 12px; margin-top: 24px;">
             Si vous n'avez pas demandé ce compte, ignorez cet email.
           </p>
