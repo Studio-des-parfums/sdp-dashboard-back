@@ -161,14 +161,6 @@ router.post('/messages', async (req: Request, res: Response) => {
     const [rows] = await pool.query<any[]>('SELECT * FROM messages WHERE id = ?', [messageId])
     const message = rows[0]
 
-    const preview = content.trim().slice(0, 100)
-    const notifMessage = `${user.first_name} ${user.last_name}: ${preview}`
-    await pool.query(
-      `INSERT INTO notifications (user_id, message_id, type, message)
-       VALUES (?, ?, 'new_message', ?)`,
-      [receiverId, messageId, notifMessage]
-    )
-
     const payload = {
       ...message,
       sender_first_name: user.first_name,
@@ -196,12 +188,6 @@ router.put('/messages/:userId/read', async (req: Request, res: Response) => {
     await pool.query(
       'UPDATE messages SET is_read = TRUE WHERE sender_id = ? AND receiver_id = ? AND is_read = FALSE',
       [otherId, user.id]
-    )
-    await pool.query(
-      `UPDATE notifications SET is_read = TRUE
-       WHERE user_id = ? AND type = 'new_message'
-       AND message_id IN (SELECT id FROM messages WHERE sender_id = ? AND receiver_id = ?)`,
-      [user.id, otherId, user.id]
     )
     res.json({ success: true })
   } catch (err) {

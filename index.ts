@@ -14,6 +14,7 @@ import coffretRoutes from './routes/coffrets'
 import atelierRoutes from './routes/ateliers'
 import optionRoutes from './routes/options'
 import { initSocket } from './services/socket'
+import pool from './db'
 
 export const app = express()
 const PORT = Number(process.env.PORT) || 3001
@@ -43,6 +44,12 @@ app.get('/health', (_req, res) => {
 if (process.env.NODE_ENV !== 'test') {
   const httpServer = createServer(app)
   initSocket(httpServer)
+
+  // Les notifications ne sont conservées que 30 jours : purge au démarrage puis chaque jour.
+  const purgeNotifications = () =>
+    pool.query('DELETE FROM notifications WHERE created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)').catch((err) => console.error('[notifications] erreur purge', err))
+  purgeNotifications()
+  setInterval(purgeNotifications, 24 * 60 * 60 * 1000)
 
   httpServer.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)

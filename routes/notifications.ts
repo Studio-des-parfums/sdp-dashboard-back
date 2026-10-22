@@ -27,7 +27,7 @@ router.get('/notifications', async (req: Request, res: Response) => {
       `SELECT n.*, t.ticket_number
        FROM notifications n
        LEFT JOIN support_tickets t ON t.id = n.ticket_id
-       WHERE n.user_id = ?
+       WHERE n.user_id = ? AND n.type <> 'new_message' AND n.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
        ORDER BY n.created_at DESC
        LIMIT 50`,
       [user.id]
@@ -47,7 +47,7 @@ router.get('/notifications/unread-count', async (req: Request, res: Response) =>
       return
     }
     const [rows] = await pool.query<any[]>(
-      'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE',
+      "SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = FALSE AND type <> 'new_message' AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)",
       [user.id]
     )
     res.json({ count: rows[0].count })

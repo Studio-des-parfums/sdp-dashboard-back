@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import pool from '../db'
+import { emitToUser } from '../services/socket'
 
 const router = Router()
 
@@ -185,6 +186,7 @@ router.put('/tickets/:id/status', async (req: Request, res: Response) => {
           'INSERT INTO notifications (user_id, ticket_id, type, message) VALUES (?, ?, ?, ?)',
           [existing.user_id, req.params.id, 'ticket_status_change', message]
         )
+        emitToUser(existing.user_id, 'notification', { type: 'ticket_status_change', message })
       }
     }
 
