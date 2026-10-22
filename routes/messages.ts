@@ -3,6 +3,8 @@ import pool from '../db'
 import multer from 'multer'
 import { emitToUser } from '../services/socket'
 import { deleteMessages } from '../services/messageCleanup'
+import { createCallRoom, createCallToken, roomNameOf, CALL_ROOM_TTL_SECONDS, listRoomTranscripts, getTranscriptText, deleteTranscript, stopRoomTranscription } from '../services/daily'
+import { summarizeMeeting } from '../services/meetingSummary'
 import { uploadVoiceMessage, getVoiceMessageUrl, uploadMessageAttachment, getMessageAttachmentUrls } from '../services/s3'
 
 const VOICE_LABEL = '🎤 Message vocal'
@@ -282,6 +284,332 @@ router.post('/messages/attachment', attachmentUpload.single('file'), async (req:
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: "Erreur lors de l'envoi du fichier" })
+  }
+})
+
+// ─────────────────────── APPELS VISIO (Daily) ───────────────────────
+
+const CALL_LABEL = '📹 Appel visio'
+
+// Lance un appel dans une conversation (collègue ou groupe) : salle privée + message d'invitation.
+router.post('/calls', async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromRequest(req)
+    if (!user) {
+      res.status(401).json({ error: 'Authentification requise' })
+      return
+    }
+    const target = await resolveTarget(req.body, user.id)
+    if (!target) {
+      res.status(400).json({ error: 'Destinataire requis' })
+      return
+    }
+    const room = await createCallRoom()
+    const message = await insertAndBroadcast(user, target, { content: CALL_LABEL, call_url: room.url })
+    // Celui qui lance l'appel en est propriétaire : lui seul peut activer le compte rendu IA.
+    const token = await createCallToken(room.name, `${user.first_name} ${user.last_name}`, true)
+    res.status(201).json({ message, url: room.url, token })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: "Impossible de lancer l'appel" })
+  }
+})
+
+// Appel (message d'invitation) accessible à l'utilisateur : membre de la conversation où il a été lancé.
+async function callForUser(callUrl: unknown, userId: number): Promise<{ call: any } | { status: number; error: string }> {
+  const [[call]] = await pool.query<any[]>(
+    'SELECT sender_id, receiver_id, group_id, call_url, created_at FROM messages WHERE call_url = ? LIMIT 1',
+    [callUrl]
+  )
+  if (!call) return { status: 404, error: 'Appel introuvable' }
+  const allowed = call.group_id
+    ? (await pool.query<any[]>('SELECT 1 FROM message_group_members WHERE group_id = ? AND user_id = ?', [call.group_id, userId]))[0].length > 0
+    : call.sender_id === userId || call.receiver_id === userId
+  return allowed ? { call } : { status: 403, error: 'Vous ne faites pas partie de cet appel' }
+}
+
+// Rejoindre un appel : jeton délivré uniquement aux membres de la conversation où il a été lancé.
+router.post('/calls/join', async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromRequest(req)
+    if (!user) {
+      res.status(401).json({ error: 'Authentification requise' })
+      return
+    }
+    const access = await callForUser(req.body.callUrl, user.id)
+    if ('error' in access) {
+      res.status(access.status).json({ error: access.error })
+      return
+    }
+    const { call } = access
+    if (Date.now() - new Date(call.created_at).getTime() > CALL_ROOM_TTL_SECONDS * 1000) {
+      res.status(410).json({ error: 'Cet appel est terminé' })
+      return
+    }
+    const token = await createCallToken(roomNameOf(call.call_url), `${user.first_name} ${user.last_name}`)
+    res.json({ url: call.call_url, token })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: "Impossible de rejoindre l'appel" })
+  }
+})
+
+// ─────────────────────── COMPTE RENDU DE RÉUNION (IA) ───────────────────────
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+/** Appels dont le compte rendu est en cours de génération (évite les doublons si deux clics). */
+const summariesInProgress = new Set<string>()
+
+// Fin de réunion : on arrête la transcription puis on attend que Daily l'ait finalisée (~1 min max).
+async function waitForFinishedTranscripts(roomName: string) {
+  await stopRoomTranscription(roomName)
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const transcripts = await listRoomTranscripts(roomName)
+    const inProgress = transcripts.some((t) => t.status === 't_in_progress')
+    const finished = transcripts.filter((t) => t.status === 't_finished' && t.isVttAvailable)
+    if (!inProgress && finished.length > 0) {
+      return finished.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+    }
+    if (!inProgress && transcripts.length === 0 && attempt >= 5) return []
+    await wait(3000)
+  }
+  return null
+}
+
+/** Membres d'une conversation (pour les droits et le temps réel). */
+async function conversationMemberIds(message: { sender_id: number; receiver_id: number | null; group_id: number | null }): Promise<number[]> {
+  if (message.group_id) {
+    const [rows] = await pool.query<any[]>('SELECT user_id FROM message_group_members WHERE group_id = ?', [message.group_id])
+    return rows.map((r) => r.user_id)
+  }
+  return [message.sender_id, message.receiver_id].filter((id): id is number => !!id)
+}
+
+// Compte rendu IA d'un appel : transcription(s) Daily → résumé + tâches (OpenAI) → message dans
+// la conversation. Une seule fois par appel ; la transcription est ensuite supprimée chez Daily.
+// Déclenché automatiquement quand le propriétaire quitte l'appel (ou manuellement en secours).
+router.post('/calls/summary', async (req: Request, res: Response) => {
+  let lockedCall: string | null = null
+  try {
+    const user = await getUserFromRequest(req)
+    if (!user) {
+      res.status(401).json({ error: 'Authentification requise' })
+      return
+    }
+    const access = await callForUser(req.body.callUrl, user.id)
+    if ('error' in access) {
+      res.status(access.status).json({ error: access.error })
+      return
+    }
+    const { call } = access
+    const [existing] = await pool.query<any[]>('SELECT id FROM messages WHERE summary_for_call = ? LIMIT 1', [call.call_url])
+    if (existing.length > 0 || summariesInProgress.has(call.call_url)) {
+      res.status(409).json({ error: 'Le résumé de cette réunion est déjà généré (ou en cours)' })
+      return
+    }
+    summariesInProgress.add(call.call_url)
+    lockedCall = call.call_url
+
+    const finished = await waitForFinishedTranscripts(roomNameOf(call.call_url))
+    if (finished === null) {
+      res.status(409).json({ error: 'La transcription est encore en cours : réessayez dans un instant' })
+      return
+    }
+    if (finished.length === 0) {
+      res.status(404).json({ error: "Aucune transcription : le compte rendu IA n'a pas été activé pendant l'appel" })
+      return
+    }
+    const transcript = (await Promise.all(finished.map((t) => getTranscriptText(t.transcriptId)))).join('\n')
+    if (!transcript.trim()) {
+      res.status(422).json({ error: "La transcription est vide : personne n'a parlé pendant l'enregistrement" })
+      return
+    }
+
+    // Tous les utilisateurs actifs (et leurs équipes) : l'IA attribue chaque tâche à la bonne personne.
+    const [userRows] = await pool.query<any[]>(
+      `SELECT u.id, u.first_name, u.last_name, GROUP_CONCAT(ut.team_slug) AS teams
+       FROM users u LEFT JOIN user_teams ut ON ut.user_id = u.id
+       WHERE u.is_active = TRUE GROUP BY u.id`
+    )
+    const users = userRows.map((u) => ({ id: u.id, name: `${u.first_name} ${u.last_name}`, teams: u.teams ? String(u.teams).split(',') : [] }))
+    const memberIds = await conversationMemberIds(call)
+    const participants = users.filter((u) => memberIds.includes(u.id)).map((u) => u.name)
+    const { summary, tasks } = await summarizeMeeting(transcript, participants, users)
+
+    const otherId = call.sender_id === user.id ? call.receiver_id : call.sender_id
+    const target: SendTarget = call.group_id
+      ? (await resolveTarget({ groupId: call.group_id }, user.id))!
+      : { receiverId: otherId, groupId: null, recipientIds: [otherId] }
+    const message = await insertAndBroadcast(user, target, {
+      content: '📝 Résumé de la réunion',
+      summary_for_call: call.call_url,
+      call_summary: JSON.stringify(summary),
+    })
+    if (tasks.length > 0) {
+      await pool.query(
+        'INSERT INTO meeting_tasks (message_id, title, description, assignee_ids, team_slug, deadline, priority) VALUES ?',
+        [tasks.map((t) => [message.id, t.title, t.description, JSON.stringify(t.assigneeIds), t.teamSlug, t.deadline, t.priority])]
+      )
+    }
+    await Promise.all(finished.map((t) => deleteTranscript(t.transcriptId)))
+    res.status(201).json({ ...message, call_summary: summary })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Impossible de générer le résumé de la réunion' })
+  } finally {
+    if (lockedCall) summariesInProgress.delete(lockedCall)
+  }
+})
+
+// Message de compte rendu accessible à l'utilisateur (membre de la conversation).
+async function summaryMessageForUser(messageId: number, userId: number) {
+  const [[message]] = await pool.query<any[]>(
+    'SELECT id, sender_id, receiver_id, group_id, call_summary, created_at FROM messages WHERE id = ? AND summary_for_call IS NOT NULL',
+    [messageId]
+  )
+  if (!message) return null
+  const memberIds = await conversationMemberIds(message)
+  return memberIds.includes(userId) ? { message, memberIds } : null
+}
+
+function serializeTask(t: any) {
+  return {
+    ...t,
+    assignee_ids: typeof t.assignee_ids === 'string' ? JSON.parse(t.assignee_ids) : t.assignee_ids,
+    deadline: t.deadline ? new Intl.DateTimeFormat('sv-SE').format(new Date(t.deadline)) : null,
+  }
+}
+
+async function loadMeetingTasks(messageId: number) {
+  const [rows] = await pool.query<any[]>('SELECT * FROM meeting_tasks WHERE message_id = ? ORDER BY id', [messageId])
+  return rows.map(serializeTask)
+}
+
+/** Les autres participants rechargent les tâches (modale ouverte) en temps réel. */
+function broadcastMeetingTasks(memberIds: number[], actorId: number, messageId: number) {
+  for (const id of memberIds) if (id !== actorId) emitToUser(id, 'meeting_tasks_updated', { message_id: messageId })
+}
+
+// Résumé complet + tâches détectées (pour la modale).
+router.get('/meeting-summaries/:messageId', async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromRequest(req)
+    if (!user) {
+      res.status(401).json({ error: 'Authentification requise' })
+      return
+    }
+    const access = await summaryMessageForUser(Number(req.params.messageId), user.id)
+    if (!access) {
+      res.status(404).json({ error: 'Résumé introuvable' })
+      return
+    }
+    res.json({ summary: access.message.call_summary, created_at: access.message.created_at, tasks: await loadMeetingTasks(access.message.id) })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Erreur lors de la récupération du résumé' })
+  }
+})
+
+async function meetingTaskForUser(taskId: number, userId: number) {
+  const [[task]] = await pool.query<any[]>('SELECT * FROM meeting_tasks WHERE id = ?', [taskId])
+  if (!task) return null
+  const access = await summaryMessageForUser(task.message_id, userId)
+  return access ? { task: serializeTask(task), memberIds: access.memberIds } : null
+}
+
+// Correction d'une tâche proposée (titre, description, assignés, équipe, échéance, priorité).
+router.put('/meeting-tasks/:id', async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromRequest(req)
+    if (!user) {
+      res.status(401).json({ error: 'Authentification requise' })
+      return
+    }
+    const access = await meetingTaskForUser(Number(req.params.id), user.id)
+    if (!access) {
+      res.status(404).json({ error: 'Tâche introuvable' })
+      return
+    }
+    if (access.task.status !== 'proposee') {
+      res.status(409).json({ error: 'Cette tâche a déjà été traitée' })
+      return
+    }
+    const { title, description, assignee_ids, team_slug, deadline, priority } = req.body
+    const fields: string[] = []
+    const values: unknown[] = []
+    if (typeof title === 'string' && title.trim()) { fields.push('title = ?'); values.push(title.trim().slice(0, 255)) }
+    if (typeof description === 'string') { fields.push('description = ?'); values.push(description) }
+    if (Array.isArray(assignee_ids)) { fields.push('assignee_ids = ?'); values.push(JSON.stringify(await activeUserIds(assignee_ids))) }
+    if (team_slug !== undefined) { fields.push('team_slug = ?'); values.push(team_slug || null) }
+    if (deadline !== undefined) { fields.push('deadline = ?'); values.push(/^\d{4}-\d{2}-\d{2}$/.test(deadline ?? '') ? deadline : null) }
+    if (['basse', 'moyenne', 'haute', 'urgente'].includes(priority)) { fields.push('priority = ?'); values.push(priority) }
+    if (fields.length > 0) await pool.query(`UPDATE meeting_tasks SET ${fields.join(', ')} WHERE id = ?`, [...values, access.task.id])
+    const [[updated]] = await pool.query<any[]>('SELECT * FROM meeting_tasks WHERE id = ?', [access.task.id])
+    broadcastMeetingTasks(access.memberIds, user.id, access.task.message_id)
+    res.json(serializeTask(updated))
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Erreur lors de la mise à jour de la tâche' })
+  }
+})
+
+// Tâche ajoutée dans Polux (créée par le front avec l'identité de l'utilisateur) : on la marque acceptée.
+router.post('/meeting-tasks/:id/accept', async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromRequest(req)
+    if (!user) {
+      res.status(401).json({ error: 'Authentification requise' })
+      return
+    }
+    const access = await meetingTaskForUser(Number(req.params.id), user.id)
+    if (!access) {
+      res.status(404).json({ error: 'Tâche introuvable' })
+      return
+    }
+    await pool.query(
+      "UPDATE meeting_tasks SET status = 'acceptee', decided_by = ?, polux_task_id = ? WHERE id = ? AND status = 'proposee'",
+      [user.id, Number(req.body.poluxTaskId) || null, access.task.id]
+    )
+    const [[updated]] = await pool.query<any[]>('SELECT * FROM meeting_tasks WHERE id = ?', [access.task.id])
+    broadcastMeetingTasks(access.memberIds, user.id, access.task.message_id)
+    res.json(serializeTask(updated))
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: "Erreur lors de l'acceptation de la tâche" })
+  }
+})
+
+// Refus : retire l'utilisateur des assignés ; la tâche est refusée quand il n'en reste plus
+// (ou directement si l'utilisateur n'en faisait pas partie, ex. le responsable qui l'écarte).
+router.post('/meeting-tasks/:id/reject', async (req: Request, res: Response) => {
+  try {
+    const user = await getUserFromRequest(req)
+    if (!user) {
+      res.status(401).json({ error: 'Authentification requise' })
+      return
+    }
+    const access = await meetingTaskForUser(Number(req.params.id), user.id)
+    if (!access) {
+      res.status(404).json({ error: 'Tâche introuvable' })
+      return
+    }
+    if (access.task.status !== 'proposee') {
+      res.status(409).json({ error: 'Cette tâche a déjà été traitée' })
+      return
+    }
+    const remaining = (access.task.assignee_ids as number[]).filter((id) => id !== user.id)
+    const wasAssigned = remaining.length < access.task.assignee_ids.length
+    if (wasAssigned && remaining.length > 0) {
+      await pool.query('UPDATE meeting_tasks SET assignee_ids = ? WHERE id = ?', [JSON.stringify(remaining), access.task.id])
+    } else {
+      await pool.query("UPDATE meeting_tasks SET status = 'refusee', decided_by = ?, assignee_ids = ? WHERE id = ?", [user.id, JSON.stringify(remaining), access.task.id])
+    }
+    const [[updated]] = await pool.query<any[]>('SELECT * FROM meeting_tasks WHERE id = ?', [access.task.id])
+    broadcastMeetingTasks(access.memberIds, user.id, access.task.message_id)
+    res.json(serializeTask(updated))
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: 'Erreur lors du refus de la tâche' })
   }
 })
 
