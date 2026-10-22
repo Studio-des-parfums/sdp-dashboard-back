@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import pool from '../db'
 import { requireAdmin } from '../middleware/requireAdmin'
+import { withTeamSlugs, setUserTeams } from '../utils/userTeams'
 
 const router = Router()
 
@@ -72,7 +73,7 @@ router.get('/users', async (_req: Request, res: Response) => {
        JOIN roles r ON r.id = u.role_id
        ORDER BY u.last_name, u.first_name`
     )
-    res.json(rows)
+    res.json(await withTeamSlugs(rows as any[]))
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: 'Erreur lors de la récupération des utilisateurs' })
@@ -81,16 +82,17 @@ router.get('/users', async (_req: Request, res: Response) => {
 
 router.put('/users/:id', async (req: Request, res: Response) => {
   try {
-    const { email, first_name, last_name, role_id, is_active } = req.body
+    const { email, first_name, last_name, role_id, team_slugs, is_active } = req.body
     await pool.query(
       'UPDATE users SET email = COALESCE(?, email), first_name = COALESCE(?, first_name), last_name = COALESCE(?, last_name), role_id = COALESCE(?, role_id), is_active = COALESCE(?, is_active) WHERE id = ?',
       [email, first_name, last_name, role_id, is_active, req.params.id]
     )
+    if (Array.isArray(team_slugs)) await setUserTeams(Number(req.params.id), team_slugs)
     const [rows] = await pool.query(
       `SELECT u.*, r.name as role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`,
       [req.params.id]
     )
-    res.json((rows as any[])[0])
+    res.json((await withTeamSlugs(rows as any[]))[0])
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: 'Erreur lors de la mise à jour de l\'utilisateur' })

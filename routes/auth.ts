@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import pool from '../db'
 import { sendWelcomeEmail, sendPasswordChangeConfirmation } from '../services/email'
 import { requireAdmin } from '../middleware/requireAdmin'
+import { withTeamSlugs, setUserTeams } from '../utils/userTeams'
 
 const router = Router()
 
@@ -71,9 +72,9 @@ function generatePseudo(firstName: string, lastName: string): string {
 
 router.post('/auth/register', requireAdmin(), async (req: Request, res: Response) => {
   try {
-    const { email, first_name, last_name, role_id } = req.body
-    if (!email || !first_name || !last_name || !role_id) {
-      res.status(400).json({ error: 'Champs requis : email, first_name, last_name, role_id' })
+    const { email, first_name, last_name, role_id, team_slugs } = req.body
+    if (!email || !first_name || !last_name || !role_id || !Array.isArray(team_slugs) || team_slugs.length === 0) {
+      res.status(400).json({ error: 'Champs requis : email, first_name, last_name, role_id, team_slugs (au moins une équipe)' })
       return
     }
 
@@ -91,6 +92,7 @@ router.post('/auth/register', requireAdmin(), async (req: Request, res: Response
       'INSERT INTO users (email, pseudo, first_name, last_name, password_hash, role_id, must_change_password) VALUES (?, ?, ?, ?, ?, ?, TRUE)',
       [email, pseudo, first_name, last_name, password_hash, role_id]
     )
+    await setUserTeams((result as any).insertId, team_slugs)
 
     await sendWelcomeEmail(email, first_name, tempPassword)
 
@@ -98,7 +100,7 @@ router.post('/auth/register', requireAdmin(), async (req: Request, res: Response
       `SELECT u.*, r.name as role_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?`,
       [(result as any).insertId]
     )
-    res.status(201).json(rows[0])
+    res.status(201).json((await withTeamSlugs(rows))[0])
   } catch (err: any) {
     if (err.code === 'ER_DUP_ENTRY') {
       res.status(409).json({ error: 'Cet email est déjà utilisé' })
