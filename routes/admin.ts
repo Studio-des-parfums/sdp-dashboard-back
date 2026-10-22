@@ -99,6 +99,17 @@ router.put('/users/:id', async (req: Request, res: Response) => {
   }
 })
 
+// Une équipe (espace officiel Polux) supprimée : on la retire des équipes de tous les utilisateurs.
+router.delete('/user-teams/:slug', async (req: Request, res: Response) => {
+  try {
+    await pool.query('DELETE FROM user_teams WHERE team_slug = ?', [req.params.slug])
+    res.json({ success: true })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: "Erreur lors du retrait de l'équipe des utilisateurs" })
+  }
+})
+
 router.delete('/users/:id', async (req: Request, res: Response) => {
   try {
     await pool.query('DELETE FROM users WHERE id = ?', [req.params.id])
