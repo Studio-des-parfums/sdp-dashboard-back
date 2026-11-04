@@ -13,6 +13,7 @@ import ingredientRuleRoutes from './routes/ingredient-rules'
 import coffretRoutes from './routes/coffrets'
 import atelierRoutes from './routes/ateliers'
 import optionRoutes from './routes/options'
+import internalRoutes from './routes/internal'
 import { initSocket } from './services/socket'
 import pool from './db'
 import { purgeOldMessages } from './services/messageCleanup'
@@ -26,6 +27,7 @@ app.use(express.json())
 // Les routers sans middleware de garde global sont montés avant adminRoutes :
 // adminRoutes applique requireAdmin() à toute requête entrant dans /api,
 // donc il doit passer en dernier pour ne pas bloquer les autres routes.
+app.use('/api/internal', internalRoutes)
 app.use('/api', dashboardRoutes)
 app.use('/api', authRoutes)
 app.use('/api', ticketRoutes)
