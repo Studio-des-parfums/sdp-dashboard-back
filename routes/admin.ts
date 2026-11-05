@@ -112,7 +112,11 @@ router.delete('/user-teams/:slug', async (req: Request, res: Response) => {
 
 router.delete('/users/:id', async (req: Request, res: Response) => {
   try {
-    await pool.query('DELETE FROM users WHERE id = ?', [req.params.id])
+    // Départ d'un utilisateur : on désactive le compte au lieu de supprimer la ligne. Une
+    // suppression effacerait en cascade ses messages, tickets, etc., et les autres services
+    // (Polux) ne pourraient plus afficher qui a fait quoi. Le compte ne peut plus se connecter.
+    await pool.query('UPDATE users SET is_active = FALSE WHERE id = ?', [req.params.id])
+    await pool.query('DELETE FROM user_teams WHERE user_id = ?', [req.params.id])
     res.json({ success: true })
   } catch (err) {
     console.error(err)

@@ -32,10 +32,18 @@ router.get('/users/by-email', async (req: Request, res: Response) => {
   }
 })
 
-// Sans `ids` : utilisateurs actifs. Avec `ids=1,2` : contacts demandés, actifs ou non.
+// Sans `ids` : utilisateurs actifs. Avec `all=1` : tous, anciens membres compris (is_active
+// exposé) — pour garder l'auteur des actions passées. Avec `ids=1,2` : contacts demandés, actifs ou non.
 router.get('/users', async (req: Request, res: Response) => {
-  const { ids } = req.query
+  const { ids, all } = req.query
   try {
+    if (all === '1') {
+      const [rows] = await pool.query<any[]>(
+        'SELECT id, email, first_name, last_name, is_active FROM users ORDER BY first_name, last_name'
+      )
+      res.json(rows.map((r) => ({ ...r, is_active: Boolean(r.is_active) })))
+      return
+    }
     if (ids === undefined) {
       const [rows] = await pool.query<any[]>(
         'SELECT id, email, first_name, last_name FROM users WHERE is_active = TRUE ORDER BY first_name, last_name'
