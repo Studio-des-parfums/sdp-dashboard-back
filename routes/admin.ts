@@ -10,6 +10,51 @@ router.use(requireAdmin())
 
 // ─────────────────────── PROJECTS ───────────────────────
 
+function slugify(name: string): string {
+  return name.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+// Nouvel espace Polux : crée le projet (kind = 'polux') qui porte les accès. Le front crée
+// ensuite l'espace correspondant dans Polux avec ce slug (et supprime le projet si ça échoue).
+router.post('/polux-workspaces', async (req: Request, res: Response) => {
+  try {
+    const { name, description, color } = req.body
+    const base = typeof name === 'string' ? slugify(name) : ''
+    if (!base) {
+      res.status(400).json({ error: "Le nom de l'espace est requis" })
+      return
+    }
+    const slug = `polux-${base}`
+    const [existing] = await pool.query<any[]>('SELECT 1 FROM projects WHERE slug = ?', [slug])
+    if (existing.length > 0) {
+      res.status(409).json({ error: 'Un espace avec un nom proche existe déjà' })
+      return
+    }
+    const [result] = await pool.query<any>(
+      "INSERT INTO projects (name, slug, kind, description, color, status) VALUES (?, ?, 'polux', ?, ?, 'active')",
+      [name.trim(), slug, description || 'Gestion de projets et de tâches', color || '#6366f1']
+    )
+    const [rows] = await pool.query<any[]>('SELECT * FROM projects WHERE id = ?', [result.insertId])
+    res.status(201).json(rows[0])
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: "Erreur lors de la création de l'espace" })
+  }
+})
+
+// Annule la création d'un espace (échec côté Polux). Limité aux projets kind = 'polux',
+// hors Polux principal.
+router.delete('/polux-workspaces/:id', async (req: Request, res: Response) => {
+  try {
+    await pool.query("DELETE FROM projects WHERE id = ? AND kind = 'polux' AND slug <> 'polux'", [req.params.id])
+    res.json({ success: true })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: "Erreur lors de la suppression de l'espace" })
+  }
+})
+
 router.put('/projects/:id', async (req: Request, res: Response) => {
   try {
     const { name, description, color, status, notes } = req.body
