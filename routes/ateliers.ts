@@ -15,10 +15,25 @@ const TRANSLATIONS_SUBSELECT = `
    WHERE t.atelier_id = a.id) AS translations
 `
 
+function parseVolumeOptions(row: any): number[] {
+  const raw = typeof row.volume_options === 'string' ? JSON.parse(row.volume_options) : row.volume_options
+  if (Array.isArray(raw) && raw.length > 0) return raw.map(Number)
+  return row.volume_ml != null ? [Number(row.volume_ml)] : []
+}
+
+// Formats saisis dans l'admin : nombres positifs, sans doublon, du plus petit au plus grand.
+function normalizeVolumeOptions(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null
+  const volumes = value.map(Number)
+  if (volumes.some((v) => !Number.isFinite(v) || v <= 0)) return null
+  return [...new Set(volumes)].sort((a, b) => a - b)
+}
+
 function parseAtelier(row: any) {
   const { translations, ...rest } = row
   return {
     ...rest,
+    volume_options: parseVolumeOptions(row),
     is_active: !!row.is_active,
     volume_ml: row.volume_ml != null ? Number(row.volume_ml) : null,
     translations: translations
@@ -87,7 +102,7 @@ router.get('/ateliers', async (req: Request, res: Response) => {
 
 router.post('/ateliers', async (req: Request, res: Response) => {
   try {
-    const { translations, coffret_id, description, volume_ml } = req.body
+    const { translations, coffret_id, description, volume_options } = req.body
     if (!translations || typeof translations !== 'object' || !Object.values(translations).some((v) => typeof v === 'string' && v.trim())) {
       res.status(400).json({ error: 'Au moins un nom traduit (translations) est requis' })
       return
@@ -96,9 +111,14 @@ router.post('/ateliers', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'coffret_id est requis' })
       return
     }
+    const volumes = volume_options === undefined ? [] : normalizeVolumeOptions(volume_options)
+    if (!volumes) {
+      res.status(400).json({ error: 'volume_options doit être une liste de volumes positifs' })
+      return
+    }
     const [result] = await pool.query<any>(
-      `INSERT INTO ateliers (coffret_id, description, volume_ml) VALUES (?, ?, ?)`,
-      [coffret_id, description ?? null, volume_ml ?? null]
+      `INSERT INTO ateliers (coffret_id, description, volume_ml, volume_options) VALUES (?, ?, ?, ?)`,
+      [coffret_id, description ?? null, volumes[0] ?? null, JSON.stringify(volumes)]
     )
     const fullTranslations = await withAutoTranslations(translations)
     await setTranslations(result.insertId, fullTranslations)
@@ -119,11 +139,19 @@ router.patch('/ateliers/:id', async (req: Request, res: Response) => {
     const fields: string[] = []
     const params: unknown[] = []
 
-    const { translations, coffret_id, description, volume_ml, is_active } = req.body
+    const { translations, coffret_id, description, volume_options, is_active } = req.body
 
     if (coffret_id !== undefined) { fields.push('coffret_id = ?'); params.push(coffret_id) }
     if (description !== undefined) { fields.push('description = ?'); params.push(description) }
-    if (volume_ml !== undefined) { fields.push('volume_ml = ?'); params.push(volume_ml) }
+    if (volume_options !== undefined) {
+      const volumes = normalizeVolumeOptions(volume_options)
+      if (!volumes) {
+        res.status(400).json({ error: 'volume_options doit être une liste de volumes positifs' })
+        return
+      }
+      fields.push('volume_ml = ?', 'volume_options = ?')
+      params.push(volumes[0] ?? null, JSON.stringify(volumes))
+    }
     if (is_active !== undefined) { fields.push('is_active = ?'); params.push(!!is_active) }
 
     if (fields.length > 0) {
