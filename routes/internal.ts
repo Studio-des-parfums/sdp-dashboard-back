@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import pool from '../db'
 import { requireServiceKey } from '../middleware/requireServiceKey'
+import { hasProjectAccess } from '../utils/projectPermissions'
 
 // API des utilisateurs pour les autres backends SDP : sdp-dashboard est le seul service
 // connecté à la base globale. Aucun hash de mot de passe n'est exposé.
@@ -63,6 +64,25 @@ router.get('/users', async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err)
     res.status(500).json({ error: 'Erreur lors de la récupération des utilisateurs' })
+  }
+})
+
+// Accès d'un utilisateur à un projet (même règle que GET /projects) — utilisé par Polux
+// pour vérifier l'accès à un espace (projet kind = 'polux' de même slug).
+router.get('/users/:id/project-access', async (req: Request, res: Response) => {
+  const { slug } = req.query
+  if (typeof slug !== 'string' || !slug) {
+    res.status(400).json({ error: 'Slug requis' })
+    return
+  }
+  try {
+    const [users] = await pool.query<any[]>('SELECT email FROM users WHERE id = ?', [req.params.id])
+    const [projects] = await pool.query<any[]>('SELECT id FROM projects WHERE slug = ?', [slug])
+    const hasAccess = !!users[0] && !!projects[0] && (await hasProjectAccess(users[0].email, projects[0].id, slug))
+    res.json({ has_access: hasAccess })
+  } catch (err) {
+    console.error(err)
+    res.status(500).json({ error: "Erreur lors de la vérification de l'accès" })
   }
 })
 

@@ -8,7 +8,7 @@ router.get('/projects', async (req: Request, res: Response) => {
   try {
     const userEmail = req.headers['x-user-email'] as string | undefined
     const [rows] = await pool.query<any[]>(
-      'SELECT id, name, slug, description, color, status, created_at FROM projects ORDER BY name'
+      'SELECT id, name, slug, kind, description, color, status, created_at FROM projects ORDER BY name'
     )
 
     const withAccess = await Promise.all(
@@ -26,7 +26,7 @@ router.get('/projects/:slug', async (req: Request, res: Response) => {
   try {
     const userEmail = req.headers['x-user-email'] as string | undefined
     const [projects] = await pool.query<any[]>(
-      'SELECT id, name, slug, description, color, status, created_at FROM projects WHERE slug = ?',
+      'SELECT id, name, slug, kind, description, color, status, created_at FROM projects WHERE slug = ?',
       [req.params.slug]
     )
     const project = projects[0]
