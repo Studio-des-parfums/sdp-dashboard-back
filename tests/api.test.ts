@@ -380,6 +380,18 @@ describe('SDP Dashboard Back API Tests', () => {
       expect(res.body.is_active).toBe(true)
     })
 
+    it('GET /api/ateliers falls back to volume_ml as the only format', async () => {
+      const res = await request(app).get('/api/ateliers')
+      expect(res.body[0].volume_options).toEqual([50])
+    })
+
+    it('POST /api/ateliers rejects invalid volume_options (400)', async () => {
+      const res = await request(app)
+        .post('/api/ateliers')
+        .send({ translations: { fr: 'Famille' }, coffret_id: 1, volume_options: [10, -3] })
+      expect(res.status).toBe(400)
+    })
+
     it('DELETE /api/ateliers/:id deletes successfully (204)', async () => {
       const res = await request(app).delete('/api/ateliers/1')
       expect(res.status).toBe(204)
