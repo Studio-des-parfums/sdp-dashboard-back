@@ -4,10 +4,15 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 // Bucket partagé avec sdp-ocr-back (mêmes credentials AWS) : les fichiers
 // clients OCR restent privés, seul le préfixe ateliers/ est rendu public
 // en lecture via une bucket policy scopée (voir server/migrations/027).
-const BUCKET = process.env.AWS_S3_BUCKET || ''
-const REGION = process.env.AWS_S3_REGION || 'eu-west-3'
+// Variables de stockage (Cloudflare R2, compatible S3) : STORAGE_*, avec repli sur les
+// anciens noms AWS_* le temps de la transition.
+function env(name: string, legacy: string, fallback = ''): string {
+  return process.env[name] || process.env[legacy] || fallback
+}
+const BUCKET = env('STORAGE_BUCKET', 'AWS_S3_BUCKET')
+const REGION = env('STORAGE_REGION', 'AWS_S3_REGION', 'eu-west-3')
 // Stockage compatible S3 autre qu'AWS (Cloudflare R2) : endpoint du compte, région 'auto'.
-const ENDPOINT = process.env.AWS_S3_ENDPOINT || ''
+const ENDPOINT = env('STORAGE_ENDPOINT', 'AWS_S3_ENDPOINT')
 // Bucket privé (R2) : les images publiques (ateliers/, options/) sont servies par ce backend
 // via /api/files/<clé> (redirection vers une URL signée). Valeur = URL publique de ce backend.
 const FILES_BASE_URL = (process.env.FILES_BASE_URL || '').replace(/\/$/, '')
@@ -21,8 +26,8 @@ function getClient(): S3Client {
     region: REGION,
     ...(ENDPOINT ? { endpoint: ENDPOINT, forcePathStyle: true } : {}),
     credentials: {
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+      accessKeyId: env('STORAGE_ACCESS_KEY_ID', 'AWS_ACCESS_KEY_ID'),
+      secretAccessKey: env('STORAGE_SECRET_ACCESS_KEY', 'AWS_SECRET_ACCESS_KEY'),
     },
   })
 }
