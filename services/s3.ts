@@ -6,6 +6,11 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 // en lecture via une bucket policy scopée (voir server/migrations/027).
 const BUCKET = process.env.AWS_S3_BUCKET || ''
 const REGION = process.env.AWS_S3_REGION || 'eu-west-3'
+// Stockage compatible S3 autre qu'AWS (Cloudflare R2) : endpoint du compte, région 'auto'.
+const ENDPOINT = process.env.AWS_S3_ENDPOINT || ''
+// Bucket privé (R2) : les images publiques (ateliers/, options/) sont servies par ce backend
+// via /api/files/<clé> (redirection vers une URL signée). Valeur = URL publique de ce backend.
+const FILES_BASE_URL = (process.env.FILES_BASE_URL || '').replace(/\/$/, '')
 const ATELIERS_PREFIX = 'ateliers/'
 // Images d'options (ex: Ruban, Champagne, Flacon murano) : même bucket, préfixe dédié
 // public en lecture — voir server/migrations/029 pour la bucket policy associée.
@@ -14,6 +19,7 @@ const OPTIONS_PREFIX = 'options/'
 function getClient(): S3Client {
   return new S3Client({
     region: REGION,
+    ...(ENDPOINT ? { endpoint: ENDPOINT, forcePathStyle: true } : {}),
     credentials: {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
@@ -22,7 +28,28 @@ function getClient(): S3Client {
 }
 
 function publicUrl(key: string): string {
+  if (FILES_BASE_URL) return `${FILES_BASE_URL}/api/files/${key}`
   return `https://${BUCKET}.s3.${REGION}.amazonaws.com/${key}`
+}
+
+// Clé de stockage d'une image publique à partir de son URL, quel que soit le format
+// (URL S3 historique ou URL /api/files/ de ce backend).
+function keyFromPublicUrl(imageUrl: string, prefix: string): string | null {
+  const markers = [`/api/files/${prefix}`, `.amazonaws.com/${prefix}`]
+  for (const marker of markers) {
+    const i = imageUrl.indexOf(marker)
+    if (i !== -1) return prefix + imageUrl.slice(i + marker.length)
+  }
+  return null
+}
+
+// Préfixes publics : seules ces images peuvent être lues sans authentification via /api/files.
+export const PUBLIC_PREFIXES = [ATELIERS_PREFIX, OPTIONS_PREFIX]
+const PUBLIC_FILE_URL_TTL_SECONDS = 3600
+
+export async function getPublicFileUrl(key: string): Promise<string | null> {
+  if (!PUBLIC_PREFIXES.some((p) => key.startsWith(p)) || key.includes('..')) return null
+  return getSignedUrl(getClient(), new GetObjectCommand({ Bucket: BUCKET, Key: key }), { expiresIn: PUBLIC_FILE_URL_TTL_SECONDS })
 }
 
 export async function uploadAtelierImage(
@@ -47,9 +74,8 @@ export async function uploadAtelierImage(
 }
 
 export async function deleteAtelierImage(imageUrl: string): Promise<void> {
-  const prefix = publicUrl(ATELIERS_PREFIX)
-  if (!imageUrl.startsWith(prefix)) return
-  const key = `${ATELIERS_PREFIX}${imageUrl.slice(prefix.length)}`
+  const key = keyFromPublicUrl(imageUrl, ATELIERS_PREFIX)
+  if (!key) return
 
   await getClient().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
 }
@@ -76,9 +102,8 @@ export async function uploadOptionImage(
 }
 
 export async function deleteOptionImage(imageUrl: string): Promise<void> {
-  const prefix = publicUrl(OPTIONS_PREFIX)
-  if (!imageUrl.startsWith(prefix)) return
-  const key = `${OPTIONS_PREFIX}${imageUrl.slice(prefix.length)}`
+  const key = keyFromPublicUrl(imageUrl, OPTIONS_PREFIX)
+  if (!key) return
 
   await getClient().send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
 }

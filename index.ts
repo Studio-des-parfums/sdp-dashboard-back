@@ -13,6 +13,7 @@ import ingredientRuleRoutes from './routes/ingredient-rules'
 import coffretRoutes from './routes/coffrets'
 import atelierRoutes from './routes/ateliers'
 import optionRoutes from './routes/options'
+import fileRoutes from './routes/files'
 import internalRoutes from './routes/internal'
 import { initSocket } from './services/socket'
 import pool from './db'
@@ -38,6 +39,7 @@ app.use('/api', ingredientRuleRoutes)
 app.use('/api', coffretRoutes)
 app.use('/api', atelierRoutes)
 app.use('/api', optionRoutes)
+app.use('/api', fileRoutes)
 app.use('/api', adminRoutes)
 
 app.get('/health', (_req, res) => {
