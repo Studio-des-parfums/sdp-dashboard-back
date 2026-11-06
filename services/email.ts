@@ -1,7 +1,7 @@
 import { Resend } from 'resend'
 
 const from = process.env.RESEND_FROM_EMAIL || 'noreply@sdp-paris.com'
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://main.d1e2pr3r9i0qy0.amplifyapp.com'
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://sdp-dashboard-production.up.railway.app'
 
 function getClient(): Resend | null {
   const key = process.env.RESEND_API_KEY
