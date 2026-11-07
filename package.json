@@ -7,7 +7,8 @@
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=text --coverage.include='routes/**' --coverage.include='services/**' --coverage.include='middleware/**' --coverage.include='utils/**'"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1133.0",
@@ -27,6 +28,7 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/supertest": "^7.2.1",
+    "@vitest/coverage-v8": "^5.0.5",
     "supertest": "^7.3.1",
     "typescript": "^5.7.2",
     "vitest": "^5.0.5"
